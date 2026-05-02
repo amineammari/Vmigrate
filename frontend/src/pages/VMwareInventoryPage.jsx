@@ -1,0 +1,1603 @@
+import { Fragment, useEffect, useMemo, useState } from 'react'
+import {
+  connectVMwareEndpoint,
+  discoverVMwareNow,
+  fetchVMwareEndpointSessions,
+  fetchTaskStatus,
+  fetchVMwareVMs,
+  testVMwareEndpoint,
+  triggerMigrations,
+} from '../api/vmware'
+import {
+  connectOpenstackEndpoint,
+  fetchOpenStackNetworkCatalog,
+  fetchOpenStackFlavors,
+  fetchOpenstackEndpointProjects,
+  fetchOpenstackEndpointSessions,
+  fetchOpenstackEndpointSession,
+  testOpenstackEndpoint,
+} from '../api/openstack'
+import PanelState from '../components/PanelState'
+import { Alert, Badge, Button, Card, PageHeader, Table } from '../components/ui'
+
+function VMwareInventoryPage() {
+  const [vms, setVMs] = useState([])
+  const [selectedKeys, setSelectedKeys] = useState(new Set())
+  const [specByKey, setSpecByKey] = useState({})
+  const [loading, setLoading] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const [openstackError, setOpenstackError] = useState('')
+  const [result, setResult] = useState(null)
+  const [flavors, setFlavors] = useState([])
+  const [networks, setNetworks] = useState([])
+  const [externalNetworks, setExternalNetworks] = useState([])
+  const [availableFloatingIps, setAvailableFloatingIps] = useState([])
+
+  const [vmwareEndpoints, setVmwareEndpoints] = useState([])
+  const [openstackEndpoints, setOpenstackEndpoints] = useState([])
+  const [selectedVmwareEndpointIds, setSelectedVmwareEndpointIds] = useState([])
+  const [selectedOpenstackEndpointId, setSelectedOpenstackEndpointId] = useState('')
+  const [openstackProjects, setOpenstackProjects] = useState([])
+  const [selectedOpenstackProject, setSelectedOpenstackProject] = useState('')
+
+  const [activeOpenstackEndpoint, setActiveOpenstackEndpoint] = useState(null)
+
+  const [showVmwareModal, setShowVmwareModal] = useState(false)
+  const [showOpenstackModal, setShowOpenstackModal] = useState(false)
+  const [expandedVmKey, setExpandedVmKey] = useState('')
+  const [vmSearch, setVmSearch] = useState('')
+  const [powerFilter, setPowerFilter] = useState('all')
+  const [tablePage, setTablePage] = useState(1)
+  const [tablePageSize, setTablePageSize] = useState(10)
+
+  const [vmwareForm, setVmwareForm] = useState({
+    label: '',
+    type: 'esxi',
+    host: '',
+    port: 443,
+    username: '',
+    password: '',
+    insecure: true,
+    datacenter: '',
+  })
+  const vmwareFormTitle = vmwareForm.type === 'vcenter' ? 'Connect VMware vCenter' : 'Connect VMware ESXi'
+  const [vmwareTesting, setVmwareTesting] = useState(false)
+  const [vmwareConnecting, setVmwareConnecting] = useState(false)
+  const [vmwareTestPassed, setVmwareTestPassed] = useState(false)
+  const [vmwareTestMessage, setVmwareTestMessage] = useState('')
+
+  const [openstackForm, setOpenstackForm] = useState({
+    label: '',
+    auth_url: '',
+    username: '',
+    password: '',
+    project_name: '',
+    user_domain_name: 'Default',
+    project_domain_name: 'Default',
+    region_name: '',
+    interface: '',
+    identity_api_version: '',
+    verify: false,
+    image_endpoint_override: '',
+  })
+  const [openstackTesting, setOpenstackTesting] = useState(false)
+  const [openstackConnecting, setOpenstackConnecting] = useState(false)
+  const [openstackTestPassed, setOpenstackTestPassed] = useState(false)
+  const [openstackTestMessage, setOpenstackTestMessage] = useState('')
+  const selectedVMs = useMemo(
+    () => vms.filter((vm) => selectedKeys.has(makeKey(vm))),
+    [vms, selectedKeys],
+  )
+  const visibleVMs = useMemo(() => {
+    const search = vmSearch.trim().toLowerCase()
+    return vms.filter((vm) => {
+      const metadata = vm?.metadata || {}
+      const searchable = [
+        vm?.name,
+        vm?.source,
+        vm?.guest_ip,
+        vm?.power_state,
+        metadata?.guest_full_name,
+        metadata?.host_name,
+        metadata?.cluster_name,
+      ].join(' ').toLowerCase()
+      const matchesSearch = !search || searchable.includes(search)
+      const matchesPower = powerFilter === 'all' || String(vm?.power_state || '').toLowerCase() === powerFilter
+      return matchesSearch && matchesPower
+    })
+  }, [powerFilter, vmSearch, vms])
+  const tableTotalPages = Math.max(1, Math.ceil(visibleVMs.length / Math.max(1, tablePageSize)))
+  const pagedVisibleVMs = useMemo(() => {
+    return visibleVMs.slice((tablePage - 1) * tablePageSize, tablePage * tablePageSize)
+  }, [visibleVMs, tablePage, tablePageSize])
+
+  useEffect(() => {
+    setTablePage(1)
+  }, [vmSearch, powerFilter, visibleVMs.length])
+
+  useEffect(() => {
+    if (tablePage > tableTotalPages) {
+      setTablePage(tableTotalPages)
+    }
+  }, [tablePage, tableTotalPages])
+
+  useEffect(() => {
+    let mounted = true
+
+    async function restoreSessions() {
+      const storedVmwareIds = parseStoredIds(localStorage.getItem('active_vmware_endpoint_session_ids'))
+      const legacyVmwareId = Number(localStorage.getItem('active_vmware_endpoint_session_id')) || null
+      const initialVmwareIds = storedVmwareIds.length ? storedVmwareIds : legacyVmwareId ? [legacyVmwareId] : []
+      const storedOpenstackId = Number(localStorage.getItem('active_openstack_endpoint_session_id')) || null
+      const storedProject = localStorage.getItem('active_openstack_project_name') || ''
+
+      const [vmwareItems, openstackItems] = await Promise.all([
+        fetchVMwareEndpointSessions(),
+        fetchOpenstackEndpointSessions(),
+      ])
+      if (!mounted) return
+      setVmwareEndpoints(vmwareItems)
+      setOpenstackEndpoints(openstackItems)
+
+      const allowedVmwareIds = new Set(vmwareItems.map((item) => Number(item.id)))
+      const nextVmwareIds = initialVmwareIds.filter((id) => allowedVmwareIds.has(Number(id)))
+      setSelectedVmwareEndpointIds(nextVmwareIds)
+      if (nextVmwareIds.length) {
+        await loadVMs(nextVmwareIds)
+      }
+
+      if (storedOpenstackId) {
+        try {
+          const session = openstackItems.find((item) => Number(item.id) === Number(storedOpenstackId))
+            || await fetchOpenstackEndpointSession(storedOpenstackId)
+          if (!mounted) return
+          setActiveOpenstackEndpoint(session)
+          setSelectedOpenstackEndpointId(String(storedOpenstackId))
+          const projects = await fetchOpenstackEndpointProjects(storedOpenstackId)
+          if (!mounted) return
+          setOpenstackProjects(projects)
+          const nextProject = storedProject || session?.project_name || projects[0]?.name || ''
+          setSelectedOpenstackProject(nextProject)
+          const [flavorsData, networksData] = await Promise.all([
+            fetchOpenStackFlavors(storedOpenstackId, { projectName: nextProject }),
+            fetchOpenStackNetworkCatalog(storedOpenstackId, { projectName: nextProject }),
+          ])
+          if (!mounted) return
+          setFlavors(Array.isArray(flavorsData) ? flavorsData : [])
+          setNetworks(networksData?.items || [])
+          setExternalNetworks(networksData?.external_networks || [])
+          setAvailableFloatingIps(networksData?.available_floating_ips || [])
+        } catch {
+          if (!mounted) return
+          localStorage.removeItem('active_openstack_endpoint_session_id')
+          localStorage.removeItem('active_openstack_project_name')
+          setActiveOpenstackEndpoint(null)
+        }
+      }
+    }
+
+    restoreSessions()
+    return () => {
+      mounted = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function loadVMs(endpointSessionIds) {
+    const ids = Array.isArray(endpointSessionIds) ? endpointSessionIds : [endpointSessionIds]
+    const cleanIds = ids.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)
+    if (!cleanIds.length) {
+      setVMs([])
+      return
+    }
+    setLoading(true)
+    setError('')
+    try {
+      const endpointById = new Map(vmwareEndpoints.map((item) => [Number(item.id), item]))
+      const batches = await Promise.all(
+        cleanIds.map(async (endpointSessionId) => {
+          const items = await fetchVMwareVMs({ endpointSessionId })
+          const endpoint = endpointById.get(Number(endpointSessionId))
+          return items.map((item) => ({
+            ...item,
+            vmware_endpoint_session_id: item.vmware_endpoint_session_id || endpointSessionId,
+            vmware_endpoint_label: endpointLabel(endpoint) || `ESXi #${endpointSessionId}`,
+          }))
+        }),
+      )
+      setVMs(batches.flat())
+    } catch (err) {
+      setError(err.message || 'Unable to load VMware inventory.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleVmwareSelectionChange(event) {
+    const ids = Array.from(event.target.selectedOptions)
+      .map((option) => Number(option.value))
+      .filter((id) => Number.isInteger(id) && id > 0)
+    setSelectedVmwareEndpointIds(ids)
+    localStorage.setItem('active_vmware_endpoint_session_ids', JSON.stringify(ids))
+    if (ids[0]) {
+      localStorage.setItem('active_vmware_endpoint_session_id', String(ids[0]))
+    } else {
+      localStorage.removeItem('active_vmware_endpoint_session_id')
+    }
+    setSelectedKeys(new Set())
+    setSpecByKey({})
+    setExpandedVmKey('')
+    await loadVMs(ids)
+  }
+
+  async function handleOpenstackSelectionChange(event) {
+    const endpointId = event.target.value
+    setSelectedOpenstackEndpointId(endpointId)
+    setOpenstackProjects([])
+    setSelectedOpenstackProject('')
+    setFlavors([])
+    setNetworks([])
+    setExternalNetworks([])
+    setAvailableFloatingIps([])
+    setActiveOpenstackEndpoint(null)
+    if (!endpointId) {
+      localStorage.removeItem('active_openstack_endpoint_session_id')
+      localStorage.removeItem('active_openstack_project_name')
+      return
+    }
+
+    const endpoint = openstackEndpoints.find((item) => String(item.id) === String(endpointId)) || null
+    setActiveOpenstackEndpoint(endpoint)
+    localStorage.setItem('active_openstack_endpoint_session_id', String(endpointId))
+    setOpenstackError('')
+    try {
+      const projects = await fetchOpenstackEndpointProjects(endpointId)
+      setOpenstackProjects(projects)
+      const nextProject = endpoint?.project_name || projects[0]?.name || ''
+      setSelectedOpenstackProject(nextProject)
+      localStorage.setItem('active_openstack_project_name', nextProject)
+      await loadOpenstackCatalog(endpointId, nextProject)
+    } catch (err) {
+      setOpenstackError(err.message || 'Impossible de charger les projets OpenStack.')
+    }
+  }
+
+  async function handleProjectSelectionChange(event) {
+    const projectName = event.target.value
+    setSelectedOpenstackProject(projectName)
+    localStorage.setItem('active_openstack_project_name', projectName)
+    if (selectedOpenstackEndpointId) {
+      await loadOpenstackCatalog(selectedOpenstackEndpointId, projectName)
+    }
+  }
+
+  async function loadOpenstackCatalog(endpointId, projectName) {
+    if (!endpointId) return
+    setOpenstackError('')
+    const [flavorsData, networkCatalog] = await Promise.all([
+      fetchOpenStackFlavors(Number(endpointId), { projectName }),
+      fetchOpenStackNetworkCatalog(Number(endpointId), { projectName }),
+    ])
+    setFlavors(Array.isArray(flavorsData) ? flavorsData : [])
+    setNetworks(networkCatalog?.items || [])
+    setExternalNetworks(networkCatalog?.external_networks || [])
+    setAvailableFloatingIps(networkCatalog?.available_floating_ips || [])
+    setSpecByKey((current) => {
+      const next = {}
+      for (const [key, spec] of Object.entries(current)) {
+        next[key] = {
+          ...spec,
+          flavor_id: '',
+          network_id: '',
+          fixed_ip: '',
+          floating_ip_external_network_id: '',
+          floating_ip_address: '',
+        }
+      }
+      return next
+    })
+  }
+
+  async function refreshFromESXi() {
+    if (!selectedVmwareEndpointIds.length) {
+      setError('Choisissez au moins un endpoint VMware.')
+      return
+    }
+    setRefreshing(true)
+    setError('')
+    try {
+      for (const endpointId of selectedVmwareEndpointIds) {
+        const endpoint = vmwareEndpoints.find((e) => Number(e.id) === Number(endpointId))
+        const isVcenter = endpoint?.datacenter !== undefined
+        const discovery = await discoverVMwareNow({
+          include_workstation: false,
+          include_esxi: !isVcenter,
+          vmware_endpoint_session_id: endpointId,
+        })
+        const taskId = discovery?.task_id
+        if (!taskId) throw new Error('Discovery did not return a task id.')
+
+        const final = await waitForTaskCompletion(taskId)
+        if (final?.state !== 'SUCCESS') {
+          const reason =
+            typeof final?.result === 'string'
+              ? final.result
+              : final?.result?.error || `Discovery task failed with state ${final?.state}.`
+          throw new Error(reason)
+        }
+
+        const esxiErrors = final?.result?.esxi?.errors
+        if (Array.isArray(esxiErrors) && esxiErrors.length > 0) {
+          throw new Error(esxiErrors[0])
+        }
+      }
+
+      await loadVMs(selectedVmwareEndpointIds)
+    } catch (err) {
+      setError(err.message || 'Unable to refresh VMware inventory.')
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  function toggleVM(vm) {
+    const key = makeKey(vm)
+    setSelectedKeys((current) => {
+      const next = new Set(current)
+      if (next.has(key)) {
+        next.delete(key)
+        setSpecByKey((prev) => {
+          const copy = { ...prev }
+          delete copy[key]
+          return copy
+        })
+      } else {
+        next.add(key)
+        setSpecByKey((prev) => {
+          if (prev[key]) return prev
+          return {
+            ...prev,
+            [key]: buildDefaultSpec(vm),
+          }
+        })
+      }
+      return next
+    })
+  }
+
+  function updateSpec(vm, field, value) {
+    const key = makeKey(vm)
+    setSpecByKey((current) => ({
+      ...current,
+      [key]: {
+        ...buildDefaultSpec(vm),
+        ...(current[key] || {}),
+        [field]: value,
+      },
+    }))
+  }
+
+  function updateSpecValues(vm, nextValues) {
+    const key = makeKey(vm)
+    setSpecByKey((current) => ({
+      ...current,
+      [key]: {
+        ...buildDefaultSpec(vm),
+        ...(current[key] || {}),
+        ...nextValues,
+      },
+    }))
+  }
+
+  async function migrateSelected() {
+    if (!selectedVMs.length) return
+    if (!selectedVmwareEndpointIds.length) {
+      setError('Veuillez choisir un endpoint VMware ESXi.')
+      return
+    }
+    const allLocalOnly = selectedVMs.every((vm) => {
+      const spec = specByKey[makeKey(vm)] || buildDefaultSpec(vm)
+      return spec.use_nfs !== true
+    })
+    if (!activeOpenstackEndpoint?.id && !allLocalOnly) {
+      setOpenstackError('Veuillez connecter un endpoint OpenStack.')
+      return
+    }
+
+    setSubmitting(true)
+    setError('')
+    setOpenstackError('')
+    setResult(null)
+
+    try {
+      const payload = selectedVMs.map((vm) => {
+        const key = makeKey(vm)
+        const spec = specByKey[key] || buildDefaultSpec(vm)
+        const overrides = buildOverrides(spec)
+        const base = {
+          name: vm.name,
+          source: vm.source,
+          vmware_endpoint_session_id: vm.vmware_endpoint_session_id,
+        }
+        if (Object.keys(overrides).length) base.overrides = overrides
+        return base
+      })
+      const response = await triggerMigrations({
+        vms: payload,
+        vmware_endpoint_session_id: selectedVmwareEndpointIds.length === 1 ? selectedVmwareEndpointIds[0] : undefined,
+        openstack_endpoint_session_id: activeOpenstackEndpoint?.id,
+        openstack_project_name: selectedOpenstackProject,
+      })
+      setResult(response)
+      setSelectedKeys(new Set())
+      setSpecByKey({})
+    } catch (err) {
+      setError(err.message || 'Migration request failed.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function handleVmwareTest() {
+    setVmwareTesting(true)
+    setVmwareTestPassed(false)
+    setVmwareTestMessage('')
+    setError('')
+    try {
+      const payload = { ...vmwareForm }
+      if (payload.type !== 'vcenter') delete payload.datacenter
+      const res = await testVMwareEndpoint(payload)
+      setVmwareTestPassed(Boolean(res?.ok))
+      setVmwareTestMessage(res?.message || 'Test réussi.')
+    } catch (err) {
+      setVmwareTestPassed(false)
+      setVmwareTestMessage(err.message || 'Echec du test VMware.')
+    } finally {
+      setVmwareTesting(false)
+    }
+  }
+
+  async function handleVmwareConnect() {
+    setVmwareConnecting(true)
+    setError('')
+    setVmwareTestPassed(false)
+    setVmwareTestMessage('')
+    try {
+      const payload = { ...vmwareForm }
+      if (payload.type !== 'vcenter') delete payload.datacenter
+      const res = await connectVMwareEndpoint(payload)
+      const endpointId = res?.vmware_endpoint_session?.id
+      if (endpointId) {
+        localStorage.setItem('active_vmware_endpoint_session_id', String(endpointId))
+        localStorage.setItem('active_vmware_endpoint_session_ids', JSON.stringify([endpointId]))
+        setSelectedVmwareEndpointIds([endpointId])
+      }
+      setVMs(Array.isArray(res?.items) ? res.items : [])
+      setSelectedKeys(new Set())
+      setSpecByKey({})
+      setExpandedVmKey('')
+      setShowVmwareModal(false)
+      setVmwareForm({
+        label: '',
+        type: 'esxi',
+        host: '',
+        port: 443,
+        username: '',
+        password: '',
+        insecure: true,
+        datacenter: '',
+      })
+      setVmwareTestPassed(false)
+      setVmwareTestMessage('')
+    } catch (err) {
+      setError(err.message || 'Connexion VMware impossible.')
+    } finally {
+      setVmwareConnecting(false)
+    }
+  }
+
+  async function handleOpenstackTest() {
+    setOpenstackTesting(true)
+    setOpenstackTestPassed(false)
+    setOpenstackTestMessage('')
+    setOpenstackError('')
+    try {
+      const res = await testOpenstackEndpoint(openstackForm)
+      setOpenstackTestPassed(Boolean(res?.ok))
+      setOpenstackTestMessage(res?.message || 'Test reussi.')
+    } catch (err) {
+      setOpenstackTestPassed(false)
+      setOpenstackTestMessage(err.message || 'Echec du test OpenStack.')
+    } finally {
+      setOpenstackTesting(false)
+    }
+  }
+
+  async function handleOpenstackConnect() {
+    setOpenstackConnecting(true)
+    setOpenstackError('')
+    setOpenstackTestPassed(false)
+    setOpenstackTestMessage('')
+    try {
+      const res = await connectOpenstackEndpoint(openstackForm)
+      setActiveOpenstackEndpoint(res?.openstack_endpoint_session || null)
+      const endpointId = res?.openstack_endpoint_session?.id
+      if (endpointId) {
+        localStorage.setItem('active_openstack_endpoint_session_id', String(endpointId))
+      }
+      setSelectedOpenstackEndpointId(String(endpointId || ''))
+      setSelectedOpenstackProject(res?.openstack_endpoint_session?.project_name || '')
+      if (endpointId) {
+        await loadOpenstackCatalog(endpointId, res?.openstack_endpoint_session?.project_name || '')
+      }
+      setShowOpenstackModal(false)
+      setOpenstackTestPassed(false)
+      setOpenstackTestMessage('')
+      if (res?.message && res.message !== 'Connection successful.') {
+        setOpenstackError(res.message)
+      }
+    } catch (err) {
+      setOpenstackError(err.message || 'Connexion OpenStack impossible.')
+    } finally {
+      setOpenstackConnecting(false)
+    }
+  }
+
+  return (
+    <section>
+      <PageHeader
+        eyebrow="VM List"
+        title="Virtual Machines"
+        description={
+          <>
+            Select discovered VMs and start migration jobs.
+          <div className="endpoint-summary">
+            <span>
+              VMware: {selectedVmwareEndpointIds.length ? `${selectedVmwareEndpointIds.length} source(s) selectionnee(s)` : 'Non selectionne'}
+            </span>
+            <span>
+              OpenStack: {activeOpenstackEndpoint ? `${endpointLabel(activeOpenstackEndpoint)} / ${selectedOpenstackProject || activeOpenstackEndpoint.project_name}` : 'Non selectionne'}
+            </span>
+          </div>
+          </>
+        }
+        actions={
+          <>
+          <Button variant="secondary" onClick={refreshFromESXi} disabled={loading || refreshing || submitting || !selectedVmwareEndpointIds.length}>
+            {refreshing ? 'Refreshing...' : 'Refresh'}
+          </Button>
+          </>
+        }
+      />
+
+      {error && <Alert>{error}</Alert>}
+      {openstackError && <Alert>{openstackError}</Alert>}
+      {result && (
+        <Alert tone="success">
+          Created: {result.created_jobs?.length || 0}, Skipped: {result.skipped_jobs?.length || 0}
+        </Alert>
+      )}
+
+
+      <div className="inventory-targets-grid">
+        <Card className="inventory-vmware-card">
+          <label style={{ display: 'block' }}>
+            <span>VMware source</span>
+            <select
+              multiple
+              value={selectedVmwareEndpointIds.map(String)}
+              onChange={handleVmwareSelectionChange}
+              disabled={submitting}
+              style={{ width: '100%' }}
+            >
+              {vmwareEndpoints.map((endpoint) => (
+                <option key={endpoint.id} value={endpoint.id}>
+                  {endpointLabel(endpoint)}
+                </option>
+              ))}
+            </select>
+            <small>Selection multiple possible pour migrer des VMs de plusieurs ESXi.</small>
+          </label>
+        </Card>
+        <Card className="inventory-openstack-card">
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr',
+              gap: '2rem',
+              alignItems: 'start',
+            }}
+          >
+            <div>
+              <label style={{ display: 'block' }}>
+                <span>OpenStack cible</span>
+                <select
+                  value={selectedOpenstackEndpointId}
+                  onChange={handleOpenstackSelectionChange}
+                  disabled={submitting}
+                  style={{ width: '100%' }}
+                >
+                  <option value="">Choisir OpenStack</option>
+                  {openstackEndpoints.map((endpoint) => (
+                    <option key={endpoint.id} value={endpoint.id}>
+                      {endpointLabel(endpoint)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div>
+              <label style={{ display: 'block' }}>
+                <span>Projet OpenStack</span>
+                <select
+                  value={selectedOpenstackProject}
+                  onChange={handleProjectSelectionChange}
+                  disabled={submitting || !selectedOpenstackEndpointId}
+                  style={{ width: '100%' }}
+                >
+                  <option value="">Choisir projet</option>
+                  {openstackProjects.map((project) => (
+                    <option key={project.id || project.name} value={project.name}>
+                      {project.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <small>Networks et flavors sont recharges pour ce projet.</small>
+            </div>
+          </div>
+        </Card>
+      </div>
+
+      <Card>
+        {!selectedVmwareEndpointIds.length ? (
+          <PanelState title="No VMware source selected" message="Choisissez un ou plusieurs endpoints VMware." />
+        ) : loading ? (
+          <PanelState title="Loading inventory" message="Fetching discovered VMware VMs..." />
+        ) : vms.length === 0 ? (
+          <PanelState title="No discovered VMs" message="Run discovery and refresh this page." />
+        ) : (
+          <>
+            <div className="toolbar">
+              <p>{selectedVMs.length} selected</p>
+              <Button
+                onClick={migrateSelected}
+                disabled={!selectedVMs.length || submitting}
+              >
+                {submitting ? 'Submitting...' : 'Migrate selected VMs'}
+              </Button>
+            </div>
+
+            <div className="filter-bar vm-filter-bar" role="search">
+              <label>
+                <span>Search VMs</span>
+                <input
+                  value={vmSearch}
+                  onChange={(event) => setVmSearch(event.target.value)}
+                  placeholder="name, OS, host, cluster"
+                />
+              </label>
+              <label>
+                <span>Power state</span>
+                <select value={powerFilter} onChange={(event) => setPowerFilter(event.target.value)}>
+                  <option value="all">All states</option>
+                  <option value="poweredon">Powered on</option>
+                  <option value="poweredoff">Powered off</option>
+                  <option value="suspended">Suspended</option>
+                </select>
+              </label>
+            </div>
+
+            {!!selectedVMs.length && (
+              <div className="spec-form-grid">
+                {selectedVMs.map((vm) => {
+                  const key = makeKey(vm)
+                  const spec = specByKey[key] || buildDefaultSpec(vm)
+                  const selectedFloatingNetwork = externalNetworks.find((item) => item.id === spec.floating_ip_external_network_id)
+                  return (
+                    <article className="spec-card" key={`spec-${key}`}>
+                      <h4>{vm.name}</h4>
+                      <p>Adjust OpenStack target specs before starting migration.</p>
+                      <div className="spec-fields">
+                        <label className="span-2">
+                          <span>Flavor</span>
+                          <select
+                            value={spec.flavor_id}
+                            onChange={(e) => {
+                              const nextFlavorId = e.target.value
+                              const nextFlavor = flavors.find((item) => item.id === nextFlavorId)
+                              updateSpecValues(vm, {
+                                flavor_id: nextFlavorId,
+                                cpu: nextFlavor ? String(nextFlavor.vcpus ?? '') : spec.cpu,
+                                ram: nextFlavor ? String(nextFlavor.ram ?? '') : spec.ram,
+                              })
+                            }}
+                            disabled={!activeOpenstackEndpoint}
+                          >
+                            <option value="">Auto (map from CPU/RAM)</option>
+                            {flavors.map((flavor) => (
+                              <option key={flavor.id} value={flavor.id}>
+                                {flavor.name} - {flavor.vcpus ?? '?'} vCPU, {flavor.ram ?? '?'} MB, {flavor.disk ?? 0} GB
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          <span>CPU</span>
+                          <input
+                            type="number"
+                            min="1"
+                            value={spec.cpu}
+                            onChange={(e) => updateSpec(vm, 'cpu', e.target.value)}
+                            disabled={Boolean(spec.flavor_id)}
+                          />
+                        </label>
+                        <label>
+                          <span>RAM (MB)</span>
+                          <input
+                            type="number"
+                            min="1"
+                            value={spec.ram}
+                            onChange={(e) => updateSpec(vm, 'ram', e.target.value)}
+                            disabled={Boolean(spec.flavor_id)}
+                          />
+                        </label>
+                        <label>
+                          <span>Network</span>
+                          {networks.length ? (
+                            <select
+                              value={spec.network_id}
+                              onChange={(e) => {
+                                const nextNetworkId = e.target.value
+                                const nextNetwork = networks.find((item) => item.id === nextNetworkId)
+                                updateSpecValues(vm, {
+                                  network_id: nextNetworkId,
+                                  network_name: nextNetwork?.name || '',
+                                  fixed_ip: '',
+                                })
+                              }}
+                              disabled={!activeOpenstackEndpoint}
+                            >
+                              <option value="">Select a network</option>
+                              {networks.map((network) => (
+                                <option key={network.id} value={network.id}>
+                                  {formatNetworkLabel(network)}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              type="text"
+                              value={spec.network_name}
+                              onChange={(e) => updateSpec(vm, 'network_name', e.target.value)}
+                              placeholder="private"
+                            />
+                          )}
+                        </label>
+                        <label>
+                          <span>Fixed IP (optional)</span>
+                          {renderFixedIpField({
+                            spec,
+                            network: networks.find((item) => item.id === spec.network_id),
+                            onChange: (value) => updateSpec(vm, 'fixed_ip', value),
+                          })}
+                        </label>
+                        <label>
+                          <span>Floating IP mode</span>
+                          <select
+                            value={spec.floating_ip_mode}
+                            onChange={(e) => {
+                              const nextMode = e.target.value
+                              updateSpecValues(vm, {
+                                floating_ip_mode: nextMode,
+                                floating_ip_address: nextMode === 'disabled' ? '' : spec.floating_ip_address,
+                              })
+                            }}
+                            disabled={!activeOpenstackEndpoint}
+                          >
+                            <option value="disabled">Disabled</option>
+                            <option value="auto">Automatic</option>
+                            <option value="manual">Manual</option>
+                          </select>
+                        </label>
+                        <label>
+                          <span>External network</span>
+                          {externalNetworks.length ? (
+                            <select
+                              value={spec.floating_ip_external_network_id}
+                              onChange={(e) => {
+                                const nextNetworkId = e.target.value
+                                const nextNetwork = externalNetworks.find((item) => item.id === nextNetworkId)
+                                updateSpecValues(vm, {
+                                  floating_ip_external_network_id: nextNetworkId,
+                                  floating_ip_external_network_name: nextNetwork?.name || '',
+                                  floating_ip_address: '',
+                                })
+                              }}
+                              disabled={!activeOpenstackEndpoint || spec.floating_ip_mode === 'disabled'}
+                            >
+                              <option value="">Auto-detect external network</option>
+                              {externalNetworks.map((network) => (
+                                <option key={network.id} value={network.id}>
+                                  {network.name || network.id}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              type="text"
+                              value={spec.floating_ip_external_network_name}
+                              onChange={(e) => updateSpec(vm, 'floating_ip_external_network_name', e.target.value)}
+                              placeholder="public"
+                              disabled={spec.floating_ip_mode === 'disabled'}
+                            />
+                          )}
+                        </label>
+                        {spec.floating_ip_mode !== 'disabled' && (
+                          <div className="span-2">
+                            <span>Floating IP</span>
+                            {renderFloatingIpField({
+                              spec,
+                              externalNetwork: selectedFloatingNetwork,
+                              availableFloatingIps,
+                              onChange: (value) => updateSpec(vm, 'floating_ip_address', value),
+                            })}
+                          </div>
+                        )}
+                        {spec.floating_ip_mode === 'auto' && (
+                          <label className="checkbox-line span-2">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(spec.floating_ip_reuse_existing)}
+                              onChange={(e) => updateSpec(vm, 'floating_ip_reuse_existing', e.target.checked)}
+                            />
+                            <span>Reuse an available Floating IP before allocating a new one</span>
+                          </label>
+                        )}
+                        <label className="span-2">
+                          <span>Extra disks (GB, comma-separated)</span>
+                          <input
+                            type="text"
+                            value={spec.extra_disks_gb}
+                            onChange={(e) => updateSpec(vm, 'extra_disks_gb', e.target.value)}
+                            placeholder="20, 50"
+                          />
+                        </label>
+                        <label className="checkbox-line span-2">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(spec.use_nfs)}
+                            onChange={(e) => updateSpec(vm, 'use_nfs', e.target.checked)}
+                          />
+                          <span>Use NFS for disk artifacts</span>
+                        </label>
+                        <div className="span-2">
+                          <span>Disks to migrate</span>
+                          <div className="subtable">
+                            {(Array.isArray(vm?.disks) ? vm.disks : []).map((disk, diskIndex) => {
+                              const systemDiskIndex = inferSystemDiskIndex(vm)
+                              const isRequired = diskIndex === systemDiskIndex
+                              const selectedDiskIndexes = Array.isArray(spec?.selected_disk_indexes)
+                                ? spec.selected_disk_indexes
+                                : []
+                              const checked = selectedDiskIndexes.includes(diskIndex)
+                              return (
+                                <label
+                                  key={`${key}-disk-${diskIndex}`}
+                                  className={`subrow ${isRequired ? 'muted' : ''}`}
+                                >
+                                  <span>
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      disabled={isRequired}
+                                      onChange={() =>
+                                        updateSpec(vm, 'selected_disk_indexes', toggleSelectedDisk(spec, diskIndex, systemDiskIndex))
+                                      }
+                                    />{' '}
+                                    {disk?.label || `Disk ${diskIndex + 1}`}
+                                    {isRequired ? ' (systeme obligatoire)' : ''}
+                                  </span>
+                                  <strong>{formatBytes(disk?.size_bytes)}</strong>
+                                </label>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    </article>
+                  )
+                })}
+              </div>
+            )}
+
+            <Table
+              pagination={{
+                page: tablePage,
+                pageSize: tablePageSize,
+                totalItems: visibleVMs.length,
+                onPageChange: setTablePage,
+                onPageSizeChange: (nextPageSize) => {
+                  setTablePageSize(nextPageSize)
+                  setTablePage(1)
+                },
+                label: 'VMs',
+              }}
+            >
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Name</th>
+                    <th>Source</th>
+                    <th>Guest OS</th>
+                    <th>IP</th>
+                    <th>CPU</th>
+                    <th>RAM (MB)</th>
+                    <th>Storage</th>
+                    <th>Host</th>
+                    <th>Power state</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pagedVisibleVMs.map((vm) => {
+                  const key = makeKey(vm)
+                  const checked = selectedKeys.has(key)
+                  const expanded = expandedVmKey === key
+                  const metadata = vm?.metadata || {}
+                  const guest = metadata?.guest || {}
+                  const storage = metadata?.storage || {}
+                  const guestOs = metadata?.guest_full_name || metadata?.summary?.guest_full_name || '-'
+                  const ip = vm?.guest_ip || guest?.ip_address || metadata?.summary?.guest_ip_address || '-'
+                  const storageValue =
+                    typeof storage?.provisioned_bytes === 'number' && storage.provisioned_bytes > 0
+                      ? formatBytes(storage.provisioned_bytes)
+                      : '-'
+                  const hostValue = metadata?.host_name || '-'
+                  const clusterValue = metadata?.cluster_name ? ` (${metadata.cluster_name})` : ''
+                  return (
+                    <Fragment key={key}>
+                      <tr key={key} className={expanded ? 'vm-row expanded' : 'vm-row'}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleVM(vm)}
+                            aria-label={`Select ${vm.name}`}
+                          />
+                        </td>
+                        <td>
+                          <div className="vm-name-cell">
+                            <strong>{vm.name}</strong>
+                            <span>{metadata?.vmx_datastore_path || metadata?.instance_uuid || '-'}</span>
+                          </div>
+                        </td>
+                        <td><Badge tone="info">{vm.vmware_endpoint_label || vm.source}</Badge></td>
+                        <td>{guestOs}</td>
+                        <td>{ip}</td>
+                        <td>{vm.cpu ?? '-'}</td>
+                        <td>{vm.ram ?? '-'}</td>
+                        <td>{storageValue}</td>
+                        <td>{`${hostValue}${clusterValue}`}</td>
+                        <td><Badge tone={powerTone(vm.power_state)}>{vm.power_state || '-'}</Badge></td>
+                        <td>
+                          <Button
+                            variant="secondary"
+                            className="slim-btn"
+                            onClick={() => setExpandedVmKey((current) => (current === key ? '' : key))}
+                          >
+                            {expanded ? 'Hide' : 'View'}
+                          </Button>
+                        </td>
+                      </tr>
+                      {expanded && (
+                        <tr className="vm-details-row">
+                          <td colSpan={11}>
+                            <VmSpecsPanel vm={vm} />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  )
+                  })}
+                </tbody>
+            </Table>
+          </>
+        )}
+      </Card>
+
+      {showVmwareModal && (
+        <div className="modal-backdrop" onClick={() => setShowVmwareModal(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <h3>{vmwareFormTitle}</h3>
+            <div className="modal-grid">
+              <label>
+                <span>Label</span>
+                <input value={vmwareForm.label} onChange={(e) => setVmwareForm((v) => ({ ...v, label: e.target.value }))} />
+              </label>
+              <label>
+                <span>Host / IP</span>
+                <input value={vmwareForm.host} onChange={(e) => setVmwareForm((v) => ({ ...v, host: e.target.value }))} />
+              </label>
+              <label>
+                <span>Port</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="65535"
+                  value={vmwareForm.port}
+                  onChange={(e) => setVmwareForm((v) => ({ ...v, port: Number.parseInt(e.target.value || '443', 10) || 443 }))}
+                />
+              </label>
+              <label>
+                <span>Username</span>
+                <input value={vmwareForm.username} onChange={(e) => setVmwareForm((v) => ({ ...v, username: e.target.value }))} />
+              </label>
+<label className="span-2">
+                <span>Label</span>
+                <input value={vmwareForm.label} onChange={(e) => setVmwareForm((v) => ({ ...v, label: e.target.value }))} />
+              </label>
+              <label>
+                <span>Source Type</span>
+                <select
+                  value={vmwareForm.type}
+                  onChange={(e) => setVmwareForm((v) => ({ ...v, type: e.target.value }))}
+                >
+                  <option value="esxi">ESXi</option>
+                  <option value="vcenter">vCenter</option>
+                </select>
+              </label>
+              <label>
+                <span>Label</span>
+                <input value={openstackForm.label} onChange={(e) => setOpenstackForm((v) => ({ ...v, label: e.target.value }))} />
+              </label>
+              <label>
+                <span>Auth URL</span>
+                <input value={openstackForm.auth_url} onChange={(e) => setOpenstackForm((v) => ({ ...v, auth_url: e.target.value }))} />
+              </label>
+              <label>
+                <span>Username</span>
+                <input value={openstackForm.username} onChange={(e) => setOpenstackForm((v) => ({ ...v, username: e.target.value }))} />
+              </label>
+              <label>
+                <span>Password</span>
+                <input type="password" value={openstackForm.password} onChange={(e) => setOpenstackForm((v) => ({ ...v, password: e.target.value }))} />
+              </label>
+              <label>
+                <span>Project</span>
+                <input value={openstackForm.project_name} onChange={(e) => setOpenstackForm((v) => ({ ...v, project_name: e.target.value }))} />
+              </label>
+              <label>
+                <span>Region</span>
+                <input value={openstackForm.region_name} onChange={(e) => setOpenstackForm((v) => ({ ...v, region_name: e.target.value }))} />
+              </label>
+              <label>
+                <span>User domain</span>
+                <input value={openstackForm.user_domain_name} onChange={(e) => setOpenstackForm((v) => ({ ...v, user_domain_name: e.target.value }))} />
+              </label>
+              <label>
+                <span>Project domain</span>
+                <input value={openstackForm.project_domain_name} onChange={(e) => setOpenstackForm((v) => ({ ...v, project_domain_name: e.target.value }))} />
+              </label>
+              <label>
+                <span>Interface</span>
+                <input value={openstackForm.interface} onChange={(e) => setOpenstackForm((v) => ({ ...v, interface: e.target.value }))} />
+              </label>
+              <label>
+                <span>Identity API version</span>
+                <input value={openstackForm.identity_api_version} onChange={(e) => setOpenstackForm((v) => ({ ...v, identity_api_version: e.target.value }))} />
+              </label>
+              <label className="span-2">
+                <span>Image endpoint override (optional)</span>
+                <input
+                  value={openstackForm.image_endpoint_override}
+                  onChange={(e) => setOpenstackForm((v) => ({ ...v, image_endpoint_override: e.target.value }))}
+                />
+              </label>
+              <label className="checkbox-line span-2">
+                <input
+                  type="checkbox"
+                  checked={openstackForm.verify}
+                  onChange={(e) => setOpenstackForm((v) => ({ ...v, verify: e.target.checked }))}
+                />
+                <span>Enable SSL verification</span>
+              </label>
+            </div>
+            {openstackTestMessage && (
+              <Alert tone={openstackTestPassed ? 'success' : 'error'}>{openstackTestMessage}</Alert>
+            )}
+            <div className="modal-actions">
+              <Button variant="secondary" onClick={handleOpenstackTest} disabled={openstackTesting || openstackConnecting}>
+                {openstackTesting ? 'Testing...' : 'Test'}
+              </Button>
+              <Button
+                onClick={handleOpenstackConnect}
+                disabled={!openstackTestPassed || openstackTesting || openstackConnecting}
+              >
+                {openstackConnecting ? 'Connecting...' : 'Connect'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function makeKey(vm) {
+  return `${vm.vmware_endpoint_session_id || 'none'}::${vm.source}::${vm.name}`
+}
+
+function parseStoredIds(value) {
+  try {
+    const parsed = JSON.parse(value || '[]')
+    if (!Array.isArray(parsed)) return []
+    return parsed.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0)
+  } catch {
+    return []
+  }
+}
+
+function endpointLabel(endpoint) {
+  if (!endpoint) return ''
+  if (endpoint.label) return endpoint.label
+  if (endpoint.host) return `${endpoint.host}:${endpoint.port || 443}`
+  if (endpoint.project_name) return `${endpoint.project_name} @ ${endpoint.auth_url}`
+  return endpoint.auth_url || `Endpoint #${endpoint.id}`
+}
+
+function buildDefaultSpec(vm) {
+  const metadata = vm?.metadata || {}
+  const systemDiskIndex = inferSystemDiskIndex(vm)
+  const allDiskIndexes = Array.isArray(vm?.disks) ? vm.disks.map((_, index) => index) : [systemDiskIndex]
+  return {
+    flavor_id: '',
+    cpu: vm?.cpu ?? '',
+    ram: vm?.ram ?? '',
+    network_id: '',
+    network_name: inferNetworkName(metadata),
+    fixed_ip: inferFixedIp(metadata),
+    floating_ip_mode: 'disabled',
+    floating_ip_address: '',
+    floating_ip_external_network_id: '',
+    floating_ip_external_network_name: '',
+    floating_ip_reuse_existing: true,
+    extra_disks_gb: '',
+    selected_disk_indexes: allDiskIndexes,
+    system_disk_index: systemDiskIndex,
+    use_nfs: false,
+  }
+}
+
+function buildOverrides(spec) {
+  const overrides = {}
+
+  if (typeof spec?.flavor_id === 'string' && spec.flavor_id.trim()) {
+    overrides.flavor_id = spec.flavor_id.trim()
+  }
+
+  const cpu = parsePositiveInteger(spec?.cpu)
+  if (cpu) overrides.cpu = cpu
+
+  const ram = parsePositiveInteger(spec?.ram)
+  if (ram) overrides.ram = ram
+
+  const extraDisks = parseDiskList(spec?.extra_disks_gb)
+  if (extraDisks.length) overrides.extra_disks_gb = extraDisks
+  if (Array.isArray(spec?.selected_disk_indexes) && spec.selected_disk_indexes.length) {
+    overrides.selected_disk_indexes = Array.from(new Set(spec.selected_disk_indexes))
+      .map((value) => Number.parseInt(String(value), 10))
+      .filter((value) => Number.isInteger(value) && value >= 0)
+      .sort((a, b) => a - b)
+  }
+  if (spec?.use_nfs === true) {
+    overrides.use_nfs = true
+  }
+
+  const network = {}
+  if (typeof spec?.network_id === 'string' && spec.network_id.trim()) {
+    network.network_id = spec.network_id.trim()
+  }
+  if (typeof spec?.network_name === 'string' && spec.network_name.trim()) {
+    network.network_name = spec.network_name.trim()
+  }
+  if (typeof spec?.fixed_ip === 'string' && spec.fixed_ip.trim()) {
+    network.fixed_ip = spec.fixed_ip.trim()
+  }
+  if (Object.keys(network).length) overrides.network = network
+
+  const floatingIpMode = typeof spec?.floating_ip_mode === 'string' ? spec.floating_ip_mode.trim().toLowerCase() : 'disabled'
+  if (floatingIpMode && floatingIpMode !== 'disabled') {
+    const floatingIp = { mode: floatingIpMode }
+    if (typeof spec?.floating_ip_address === 'string' && spec.floating_ip_address.trim()) {
+      floatingIp.address = spec.floating_ip_address.trim()
+    }
+    if (typeof spec?.floating_ip_external_network_id === 'string' && spec.floating_ip_external_network_id.trim()) {
+      floatingIp.external_network_id = spec.floating_ip_external_network_id.trim()
+    }
+    if (
+      typeof spec?.floating_ip_external_network_name === 'string' &&
+      spec.floating_ip_external_network_name.trim() &&
+      !floatingIp.external_network_id
+    ) {
+      floatingIp.external_network_name = spec.floating_ip_external_network_name.trim()
+    }
+    if (typeof spec?.floating_ip_reuse_existing === 'boolean') {
+      floatingIp.reuse_existing = spec.floating_ip_reuse_existing
+    }
+    overrides.floating_ip = floatingIp
+  }
+
+  return overrides
+}
+
+function parsePositiveInteger(value) {
+  const parsed = Number.parseInt(String(value), 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) return null
+  return parsed
+}
+
+function parseDiskList(value) {
+  if (typeof value !== 'string') return []
+  return value
+    .split(',')
+    .map((part) => Number.parseInt(part.trim(), 10))
+    .filter((n) => Number.isFinite(n) && n > 0)
+}
+
+function inferNetworkName(metadata) {
+  if (!metadata || typeof metadata !== 'object') return ''
+
+  const candidates = [
+    metadata.network_name,
+    metadata.portgroup,
+    metadata.primary_network,
+    metadata.network?.name,
+    metadata.network,
+  ]
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim()
+  }
+  return ''
+}
+
+function inferFixedIp(metadata) {
+  if (!metadata || typeof metadata !== 'object') return ''
+
+  const candidates = [
+    metadata.ip_address,
+    metadata.ip,
+    metadata.ipv4,
+    metadata.guest_ip,
+    metadata.primary_ip,
+  ]
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim()
+  }
+  return ''
+}
+
+function inferSystemDiskIndex(vm) {
+  const disks = Array.isArray(vm?.disks) ? vm.disks : []
+  if (!disks.length) return 0
+
+  let bestIndex = 0
+  let bestScore = -1
+  disks.forEach((disk, index) => {
+    const label = String(disk?.label || '').trim().toLowerCase()
+    const filename = String(disk?.filename || disk?.path || '').trim().toLowerCase()
+    const unitNumber = disk?.unit_number
+    let score = index === 0 ? 10 : 0
+
+    if (unitNumber === 0) score += 100
+    if (label === 'hard disk 1' || label === 'disk 1' || label === 'boot disk') score += 80
+    else if (label.includes('hard disk 1')) score += 40
+    if (filename.endsWith('.vmdk') || filename.endsWith('.qcow2') || filename.endsWith('-flat.vmdk')) score += 1
+
+    if (score > bestScore) {
+      bestScore = score
+      bestIndex = index
+    }
+  })
+
+  return bestIndex
+}
+
+function toggleSelectedDisk(spec, diskIndex, requiredIndex) {
+  const current = Array.isArray(spec?.selected_disk_indexes) ? spec.selected_disk_indexes : []
+  const next = new Set(current)
+  if (diskIndex === requiredIndex) {
+    next.add(requiredIndex)
+  } else if (next.has(diskIndex)) {
+    next.delete(diskIndex)
+  } else {
+    next.add(diskIndex)
+  }
+  next.add(requiredIndex)
+  return Array.from(next).sort((a, b) => a - b)
+}
+
+function formatNetworkLabel(network) {
+  const name = network?.name || network?.id || 'network'
+  const external = network?.is_router_external ? 'external' : 'tenant'
+  const subnets = Array.isArray(network?.subnets) ? network.subnets : []
+  const subnetLabels = subnets
+    .map((subnet) => {
+      const cidr = subnet?.cidr
+      const pool = Array.isArray(subnet?.allocation_pools) ? subnet.allocation_pools[0] : null
+      const poolLabel = pool?.start && pool?.end ? ` [${pool.start}-${pool.end}]` : ''
+      return cidr ? `${cidr}${poolLabel}` : null
+    })
+    .filter(Boolean)
+  const subnetSuffix = subnetLabels.length ? ` - ${subnetLabels.slice(0, 1).join(', ')}` : ''
+  const extra = subnetLabels.length > 2 ? ' +more' : ''
+  const label = `${name} (${external})${subnetSuffix}${extra}`
+  return truncateMiddle(label, 90)
+}
+
+function formatBytes(value) {
+  const num = Number(value)
+  if (!Number.isFinite(num) || num <= 0) return '-'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+  let size = num
+  let idx = 0
+  while (size >= 1024 && idx < units.length - 1) {
+    size /= 1024
+    idx += 1
+  }
+  return `${size.toFixed(size >= 100 ? 0 : 1)} ${units[idx]}`
+}
+
+function getAvailableIps(network) {
+  const subnets = Array.isArray(network?.subnets) ? network.subnets : []
+  const items = []
+  let totalCount = 0
+  let truncated = false
+
+  for (const subnet of subnets) {
+    const available = Array.isArray(subnet?.available_ips) ? subnet.available_ips : []
+    if (Number.isFinite(subnet?.available_ip_count)) {
+      totalCount += subnet.available_ip_count
+    } else {
+      totalCount += available.length
+    }
+    if (subnet?.available_ips_truncated) truncated = true
+    for (const ip of available) {
+      items.push({ ip, subnet })
+    }
+  }
+
+  return { items, totalCount, truncated }
+}
+
+function renderFixedIpField({ spec, network, onChange }) {
+  const { items, totalCount, truncated } = getAvailableIps(network)
+  const showSelect = items.length > 0
+  const showManual = !showSelect || truncated
+  const displayCount = formatCount(totalCount)
+
+  return (
+    <div className="fixed-ip-field">
+      {showSelect && (
+        <select value={spec.fixed_ip} onChange={(e) => onChange(e.target.value)}>
+          <option value="">Auto-assign</option>
+          {items.map(({ ip, subnet }) => (
+            <option key={`${subnet?.id || 'subnet'}-${ip}`} value={ip}>
+              {ip} {subnet?.cidr ? `(${subnet.cidr})` : ''}
+            </option>
+          ))}
+        </select>
+      )}
+      {showManual && (
+        <input
+          type="text"
+          value={spec.fixed_ip}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="192.168.1.20"
+        />
+      )}
+      {showSelect && (
+        <span className="helper-text">
+          {truncated
+            ? `Showing ${formatCount(items.length)} of ${displayCount} available IPs. Use manual entry if needed.`
+            : `${displayCount} IPs available in selected network.`}
+        </span>
+      )}
+    </div>
+  )
+}
+
+function getAvailableFloatingIps(availableFloatingIps, externalNetworkId) {
+  const items = Array.isArray(availableFloatingIps) ? availableFloatingIps : []
+  const filtered = externalNetworkId
+    ? items.filter((item) => item?.floating_network_id === externalNetworkId)
+    : items
+
+  return filtered
+    .filter((item) => typeof item?.address === 'string' && item.address.trim())
+    .sort((a, b) => String(a.address).localeCompare(String(b.address)))
+}
+
+function renderFloatingIpField({ spec, externalNetwork, availableFloatingIps, onChange }) {
+  const items = getAvailableFloatingIps(availableFloatingIps, spec?.floating_ip_external_network_id)
+  const showSelect = items.length > 0
+  const mode = spec?.floating_ip_mode || 'disabled'
+  const helperBits = []
+
+  if (mode === 'auto') {
+    helperBits.push('Leave the address empty to auto-allocate or reuse a Floating IP.')
+  }
+  if (mode === 'manual') {
+    helperBits.push('Pick an unassigned Floating IP or enter one manually.')
+  }
+  if (externalNetwork?.name) {
+    helperBits.push(`External network: ${externalNetwork.name}`)
+  }
+  if (!externalNetwork && spec?.floating_ip_external_network_id) {
+    helperBits.push('Selected external network is no longer in the current catalog.')
+  }
+
+  return (
+    <div className="floating-ip-field">
+      {showSelect && (
+        <select value={spec.floating_ip_address} onChange={(e) => onChange(e.target.value)}>
+          <option value="">
+            {mode === 'manual' ? 'Choose an available Floating IP' : 'Auto-select or allocate'}
+          </option>
+          {items.map((item) => (
+            <option key={item.id || item.address} value={item.address}>
+              {item.address}
+            </option>
+          ))}
+        </select>
+      )}
+      <input
+        type="text"
+        value={spec.floating_ip_address}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="203.0.113.25"
+      />
+      <span className="helper-text">
+        {showSelect
+          ? `${formatCount(items.length)} unassigned Floating IPs visible.${helperBits.length ? ` ${helperBits.join(' ')}` : ''}`
+          : helperBits.join(' ') || 'Enter an existing Floating IP address.'}
+      </span>
+    </div>
+  )
+}
+
+function formatCount(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 0) return '-'
+  if (n > 1000000000) return 'many'
+  return n.toLocaleString()
+}
+
+function truncateMiddle(value, maxLen) {
+  const text = String(value || '')
+  if (text.length <= maxLen) return text
+  const side = Math.max(8, Math.floor((maxLen - 3) / 2))
+  return `${text.slice(0, side)}...${text.slice(-side)}`
+}
+
+function VmSpecsPanel({ vm }) {
+  const metadata = vm?.metadata || {}
+  const guest = metadata?.guest || {}
+  const storage = metadata?.storage || {}
+  const disks = Array.isArray(vm?.disks) ? vm.disks : []
+  const nics = Array.isArray(vm?.nics) ? vm.nics : []
+  const guestNics = Array.isArray(guest?.nics) ? guest.nics : []
+  const datastores = Array.isArray(metadata?.datastores) ? metadata.datastores : []
+  const networks = Array.isArray(metadata?.networks) ? metadata.networks : []
+
+  return (
+    <div className="vm-specs-panel">
+      <div className="vm-specs-grid">
+        <section className="vm-spec-block">
+          <h4>Compute</h4>
+          <dl>
+            <div><dt>vCPU</dt><dd>{vm?.cpu ?? '-'}</dd></div>
+            <div><dt>RAM</dt><dd>{vm?.ram ? `${vm.ram} MB` : '-'}</dd></div>
+            <div><dt>Firmware</dt><dd>{metadata?.firmware || '-'}</dd></div>
+            <div><dt>HW version</dt><dd>{metadata?.vm_hw_version || '-'}</dd></div>
+            <div><dt>Guest tools</dt><dd>{guest?.tools_running_status || '-'}</dd></div>
+            <div><dt>Boot time</dt><dd>{formatDateTime(metadata?.boot_time)}</dd></div>
+          </dl>
+        </section>
+
+        <section className="vm-spec-block">
+          <h4>Storage</h4>
+          <dl>
+            <div><dt>Disk count</dt><dd>{disks.length}</dd></div>
+            <div><dt>Provisioned</dt><dd>{formatBytes(storage?.provisioned_bytes)}</dd></div>
+            <div><dt>Committed</dt><dd>{formatBytes(storage?.committed_bytes)}</dd></div>
+            <div><dt>Snapshot count</dt><dd>{metadata?.snapshot_count ?? 0}</dd></div>
+            <div><dt>Datastores</dt><dd>{datastores.length ? datastores.join(', ') : '-'}</dd></div>
+          </dl>
+          <div className="subtable">
+            {disks.slice(0, 6).map((disk, idx) => (
+              <div key={`${disk?.label || 'disk'}-${idx}`} className="subrow">
+                <span>{disk?.label || `disk${idx}`}</span>
+                <strong>{formatBytes(disk?.size_bytes)}</strong>
+              </div>
+            ))}
+            {disks.length > 6 && <div className="subrow muted">+{disks.length - 6} more disks</div>}
+          </div>
+        </section>
+
+        <section className="vm-spec-block">
+          <h4>Network</h4>
+          <dl>
+            <div><dt>Primary IP</dt><dd>{vm?.guest_ip || guest?.ip_address || '-'}</dd></div>
+            <div><dt>NIC count</dt><dd>{nics.length}</dd></div>
+            <div><dt>Networks</dt><dd>{networks.length ? networks.join(', ') : '-'}</dd></div>
+            <div><dt>Host</dt><dd>{metadata?.host_name || '-'}</dd></div>
+            <div><dt>Cluster</dt><dd>{metadata?.cluster_name || '-'}</dd></div>
+          </dl>
+          <div className="subtable">
+            {nics.slice(0, 6).map((nic, idx) => (
+              <div key={`${nic?.mac_address || 'nic'}-${idx}`} className="subrow">
+                <span>{nic?.network || nic?.label || `nic${idx}`}</span>
+                <strong>{nic?.mac_address || '-'}</strong>
+              </div>
+            ))}
+            {guestNics.slice(0, 3).map((nic, idx) => (
+              <div key={`guest-nic-${idx}`} className="subrow muted">
+                <span>{nic?.network || 'guest nic'}</span>
+                <strong>{Array.isArray(nic?.ips) && nic.ips.length ? nic.ips.join(', ') : '-'}</strong>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="vm-spec-block">
+          <h4>Identity</h4>
+          <dl>
+            <div><dt>Power</dt><dd>{vm?.power_state || '-'}</dd></div>
+            <div><dt>Connection</dt><dd>{metadata?.connection_state || '-'}</dd></div>
+            <div><dt>Instance UUID</dt><dd className="mono">{metadata?.instance_uuid || '-'}</dd></div>
+            <div><dt>BIOS UUID</dt><dd className="mono">{metadata?.bios_uuid || '-'}</dd></div>
+            <div><dt>MOID</dt><dd className="mono">{metadata?.moid || '-'}</dd></div>
+          </dl>
+        </section>
+      </div>
+
+      <details className="raw-specs">
+        <summary>Raw JSON</summary>
+        <pre>{JSON.stringify(vm, null, 2)}</pre>
+      </details>
+    </div>
+  )
+}
+
+function formatDateTime(value) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value)
+  return date.toLocaleString()
+}
+
+function powerTone(value) {
+  const normalized = String(value || '').toLowerCase()
+  if (normalized.includes('on')) return 'success'
+  if (normalized.includes('off')) return 'info'
+  return 'warning'
+}
+
+async function waitForTaskCompletion(taskId, timeoutMs = 60000, intervalMs = 1200) {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    const status = await fetchTaskStatus(taskId)
+    if (status?.ready) return status
+    await sleep(intervalMs)
+  }
+  throw new Error('Discovery timed out. Please try refresh again.')
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+export default VMwareInventoryPage

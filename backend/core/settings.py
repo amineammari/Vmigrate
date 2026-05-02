@@ -1,0 +1,356 @@
+import json
+import os
+from datetime import timedelta
+from pathlib import Path
+
+import dj_database_url
+import environ
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Read environment variables from the repo .env file
+env = environ.Env(
+    DEBUG=(bool, False),
+)
+environ.Env.read_env(BASE_DIR / ".env")
+
+# NFS configuration (do not hardcode paths in application logic)
+# - Use NFS_ENABLED to toggle NFS usage (default: false)
+# - NFS_PATH must be provided when NFS is enabled; default kept as '/nfs' for deployments
+NFS_ENABLED = env.bool("NFS_ENABLED", default=False)
+NFS_PATH = env("NFS_PATH", default="/nfs")
+NFS_VALIDATE_MOUNT = env.bool("NFS_VALIDATE_MOUNT", default=True)
+# Convenience derived paths (these are optional and used by storage helper)
+NFS_VMDK_PATH = os.path.join(NFS_PATH, "vmdk")
+NFS_QCOW2_PATH = os.path.join(NFS_PATH, "qcow2")
+
+SECRET_KEY = env("SECRET_KEY", default="unsafe-dev-key-change-me")
+DEBUG = env("DEBUG", default=False)
+
+# In production, set explicit hosts (comma-separated). Defaults are local-safe.
+ALLOWED_HOSTS = [
+    h.strip()
+    for h in env("ALLOWED_HOSTS", default="127.0.0.1,localhost,backend,vmigrate-backend,db,vmigrate-db,redis,vmigrate-redis").split(",")
+    if h.strip()
+]
+
+INSTALLED_APPS = [
+    "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",
+    "django_cryptography",
+    "rest_framework",
+    "rest_framework_simplejwt",
+    "users",
+    "migrations",
+]
+
+MIDDLEWARE = [
+    "django.middleware.security.SecurityMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+    "django.middleware.clickjacking.XFrameOptionsMiddleware",
+]
+
+ROOT_URLCONF = "core.urls"
+
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
+            ],
+        },
+    },
+]
+
+WSGI_APPLICATION = "core.wsgi.application"
+ASGI_APPLICATION = "core.asgi.application"
+
+DATABASES = {
+    "default": dj_database_url.parse(
+        env("DATABASE_URL", default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}"),
+        conn_max_age=env.int("DB_CONN_MAX_AGE", default=600),
+    )
+}
+# Prefer lightweight SQLite for tests to avoid external DB permissions.
+if "test" in __import__("sys").argv:
+    DATABASES["default"] = {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "test_db.sqlite3",
+    }
+
+AUTH_PASSWORD_VALIDATORS = [
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
+
+LANGUAGE_CODE = "en-us"
+TIME_ZONE = env("TIME_ZONE", default="UTC")
+USE_I18N = True
+USE_TZ = True
+
+STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+AUTH_USER_MODEL = "users.User"
+
+REST_FRAMEWORK = {
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ],
+}
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "ROTATE_REFRESH_TOKENS": False,
+    "BLACKLIST_AFTER_ROTATION": False,
+    "UPDATE_LAST_LOGIN": True,
+}
+
+# Celery core settings
+CELERY_BROKER_URL = env("REDIS_URL", default="redis://127.0.0.1:6379/0")
+CELERY_RESULT_BACKEND = env("REDIS_URL", default="redis://127.0.0.1:6379/0")
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = TIME_ZONE
+
+# Celery reliability and safe worker defaults
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+CELERY_WORKER_PREFETCH_MULTIPLIER = env.int("CELERY_WORKER_PREFETCH_MULTIPLIER", default=1)
+CELERY_WORKER_CONCURRENCY = env.int("CELERY_WORKER_CONCURRENCY", default=2)
+CELERY_TASK_SOFT_TIME_LIMIT = env.int("CELERY_TASK_SOFT_TIME_LIMIT", default=3600)
+CELERY_TASK_TIME_LIMIT = env.int("CELERY_TASK_TIME_LIMIT", default=3900)
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_DEFAULT_RETRY_DELAY = env.int("CELERY_TASK_DEFAULT_RETRY_DELAY", default=30)
+CELERY_TASK_PUBLISH_RETRY = True
+CELERY_TASK_PUBLISH_RETRY_POLICY = {
+    "max_retries": env.int("CELERY_PUBLISH_MAX_RETRIES", default=3),
+    "interval_start": 0,
+    "interval_step": 0.5,
+    "interval_max": 3,
+}
+
+# Periodic discovery (Celery beat)
+ENABLE_PERIODIC_DISCOVERY = env.bool("ENABLE_PERIODIC_DISCOVERY", default=False)
+DISCOVERY_INTERVAL_SECONDS = env.int("DISCOVERY_INTERVAL_SECONDS", default=300)
+DISCOVERY_INCLUDE_WORKSTATION = env.bool("DISCOVERY_INCLUDE_WORKSTATION", default=True)
+DISCOVERY_INCLUDE_ESXI = env.bool("DISCOVERY_INCLUDE_ESXI", default=True)
+
+if ENABLE_PERIODIC_DISCOVERY:
+    CELERY_BEAT_SCHEDULE = {
+        "discover-vmware-vms": {
+            "task": "migrations.discover_vmware_vms",
+            "schedule": timedelta(seconds=DISCOVERY_INTERVAL_SECONDS),
+            "args": (DISCOVERY_INCLUDE_WORKSTATION, DISCOVERY_INCLUDE_ESXI),
+        }
+    }
+
+# Conversion execution controls
+ENABLE_REAL_CONVERSION = env.bool("ENABLE_REAL_CONVERSION", default=False)
+MIGRATION_OUTPUT_DIR = env("MIGRATION_OUTPUT_DIR", default="/var/lib/vm-migrator/images")
+VIRT_V2V_TIMEOUT_SECONDS = env.int("VIRT_V2V_TIMEOUT_SECONDS", default=7200)
+VMDK_DOWNLOAD_TIMEOUT = env.int("VMDK_DOWNLOAD_TIMEOUT", default=7200)
+
+ENABLE_ROLLBACK = env.bool("ENABLE_ROLLBACK", default=True)
+
+# Minimal artifact backup (stores a copy of QCOW2 before OpenStack upload).
+ENABLE_ARTIFACT_BACKUP = env.bool("ENABLE_ARTIFACT_BACKUP", default=False)
+ARTIFACT_BACKUP_DIR = env("ARTIFACT_BACKUP_DIR", default=str(Path(MIGRATION_OUTPUT_DIR) / "backups"))
+ARTIFACT_BACKUP_REQUIRED = env.bool("ARTIFACT_BACKUP_REQUIRED", default=False)
+
+# Inject a boot-time guest network self-heal service into converted Linux images.
+ENABLE_GUEST_NETWORK_REMEDIATION = env.bool("ENABLE_GUEST_NETWORK_REMEDIATION", default=True)
+GUEST_NETWORK_REMEDIATION_TIMEOUT_SECONDS = env.int("GUEST_NETWORK_REMEDIATION_TIMEOUT_SECONDS", default=300)
+GUEST_NETWORK_DISABLE_CLOUD_INIT_NETWORK_CONFIG = env.bool(
+    "GUEST_NETWORK_DISABLE_CLOUD_INIT_NETWORK_CONFIG",
+    default=False,
+)
+
+# If true, migration fails when OS detection cannot classify the guest as a supported family.
+MIGRATION_FAIL_ON_UNSUPPORTED_OS = env.bool("MIGRATION_FAIL_ON_UNSUPPORTED_OS", default=False)
+
+# ESXi conversion guardrails
+VMWARE_REQUIRE_NO_SNAPSHOTS = env.bool("VMWARE_REQUIRE_NO_SNAPSHOTS", default=True)
+
+# OpenStack deployment controls
+ENABLE_OPENSTACK_DEPLOYMENT = env.bool("ENABLE_OPENSTACK_DEPLOYMENT", default=False)
+OPENSTACK_CLOUD_NAME = env("OPENSTACK_CLOUD_NAME", default="openstack")
+OPENSTACK_DEFAULT_NETWORK = env("OPENSTACK_DEFAULT_NETWORK", default="")
+OPENSTACK_DEFAULT_EXTERNAL_NETWORK = env("OPENSTACK_DEFAULT_EXTERNAL_NETWORK", default="")
+# Optional. When DevStack publishes a broken /image proxy endpoint, point this to Glance directly
+# (eg http://192.168.72.169:60999 after exposing it on 0.0.0.0 on the OpenStack node).
+OPENSTACK_IMAGE_ENDPOINT_OVERRIDE = env("OPENSTACK_IMAGE_ENDPOINT_OVERRIDE", default="")
+OPENSTACK_VERIFY_TIMEOUT = env.int("OPENSTACK_VERIFY_TIMEOUT", default=900)
+OPENSTACK_VERIFY_POLL_INTERVAL = env.int("OPENSTACK_VERIFY_POLL_INTERVAL", default=10)
+OPENSTACK_IMAGE_UPLOAD_TIMEOUT = env.int("OPENSTACK_IMAGE_UPLOAD_TIMEOUT", default=900)
+OPENSTACK_IMAGE_UPLOAD_POLL_INTERVAL = env.int("OPENSTACK_IMAGE_UPLOAD_POLL_INTERVAL", default=5)
+OPENSTACK_API_RETRIES = env.int("OPENSTACK_API_RETRIES", default=2)
+OPENSTACK_API_RETRY_DELAY = env.int("OPENSTACK_API_RETRY_DELAY", default=3)
+OPENSTACK_ENSURE_BASELINE_ACCESS_SECURITY_GROUP = env.bool(
+    "OPENSTACK_ENSURE_BASELINE_ACCESS_SECURITY_GROUP",
+    default=True,
+)
+OPENSTACK_BASELINE_ACCESS_SECURITY_GROUP_NAME = env(
+    "OPENSTACK_BASELINE_ACCESS_SECURITY_GROUP_NAME",
+    default="vm-migrator-access",
+)
+OPENSTACK_BASELINE_ACCESS_SECURITY_GROUP_DESCRIPTION = env(
+    "OPENSTACK_BASELINE_ACCESS_SECURITY_GROUP_DESCRIPTION",
+    default="Baseline ingress/egress rules for migrated VMs.",
+)
+_openstack_sg_rules_raw = env(
+    "OPENSTACK_BASELINE_ACCESS_SECURITY_GROUP_RULES_JSON",
+    default=json.dumps(
+        [
+            {
+                "direction": "ingress",
+                "ether_type": "IPv4",
+                "protocol": "icmp",
+                "remote_ip_prefix": "0.0.0.0/0",
+            },
+            {
+                "direction": "ingress",
+                "ether_type": "IPv4",
+                "protocol": "tcp",
+                "port_range_min": 22,
+                "port_range_max": 22,
+                "remote_ip_prefix": "0.0.0.0/0",
+            },
+            {
+                "direction": "egress",
+                "ether_type": "IPv4",
+                "remote_ip_prefix": "0.0.0.0/0",
+            },
+            {
+                "direction": "egress",
+                "ether_type": "IPv6",
+                "remote_ip_prefix": "::/0",
+            },
+        ]
+    ),
+)
+try:
+    OPENSTACK_BASELINE_ACCESS_SECURITY_GROUP_RULES = (
+        json.loads(_openstack_sg_rules_raw) if _openstack_sg_rules_raw else []
+    )
+except json.JSONDecodeError:
+    OPENSTACK_BASELINE_ACCESS_SECURITY_GROUP_RULES = []
+
+# Ansible conversion controls
+ENABLE_ANSIBLE_CONVERSION = env.bool("ENABLE_ANSIBLE_CONVERSION", default=False)
+ANSIBLE_PLAYBOOK_PATH = env(
+    "ANSIBLE_PLAYBOOK_PATH",
+    default=str(BASE_DIR.parent / "ansible" / "playbooks" / "conversion.yml"),
+)
+ANSIBLE_INVENTORY_PATH = env(
+    "ANSIBLE_INVENTORY_PATH",
+    default=str(BASE_DIR.parent / "ansible" / "inventory" / "hosts.ini"),
+)
+ANSIBLE_BIN = env("ANSIBLE_BIN", default="ansible-playbook")
+ANSIBLE_TIMEOUT_SECONDS = env.int("ANSIBLE_TIMEOUT_SECONDS", default=7200)
+ANSIBLE_LIMIT = env("ANSIBLE_LIMIT", default="")
+
+# Host-based conversion controls (for Docker deployments)
+USE_HOST_CONVERSION = env.bool("USE_HOST_CONVERSION", default=False)
+CONVERSION_HOST = env("CONVERSION_HOST", default="localhost")
+CONVERSION_USER = env("CONVERSION_USER", default="root")
+CONVERSION_SSH_KEY = env("CONVERSION_SSH_KEY", default="")
+CONVERSION_SSH_PORT = env.int("CONVERSION_SSH_PORT", default=22)
+
+# Terraform infrastructure controls
+ENABLE_TERRAFORM_INFRA = env.bool("ENABLE_TERRAFORM_INFRA", default=False)
+ENABLE_TERRAFORM_FROM_CELERY = env.bool("ENABLE_TERRAFORM_FROM_CELERY", default=False)
+TERRAFORM_BIN = env("TERRAFORM_BIN", default="terraform")
+TERRAFORM_WORKING_DIR = env("TERRAFORM_WORKING_DIR", default=str(BASE_DIR.parent / "terraform"))
+TERRAFORM_TIMEOUT_SECONDS = env.int("TERRAFORM_TIMEOUT_SECONDS", default=1800)
+_tf_vars_raw = env("TERRAFORM_DEFAULT_VARS_JSON", default="{}")
+try:
+    TERRAFORM_DEFAULT_VARS = json.loads(_tf_vars_raw) if _tf_vars_raw else {}
+except json.JSONDecodeError:
+    TERRAFORM_DEFAULT_VARS = {}
+
+# Logging
+LOG_DIR = Path(env("LOG_DIR", default=str(BASE_DIR / "logs")))
+try:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+except PermissionError:
+    LOG_DIR = Path("/tmp/logs")
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_LEVEL = env("LOG_LEVEL", default="INFO")
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "filters": {
+        "worker_only": {"()": "core.logging.WorkerLogFilter"},
+        "app_only": {"()": "core.logging.AppLogFilter"},
+    },
+    "formatters": {
+        "json": {"()": "core.logging.JsonFormatter"},
+    },
+    "handlers": {
+        "console_app": {
+            "class": "logging.StreamHandler",
+            "formatter": "json",
+            "filters": ["app_only"],
+        },
+        "console_worker": {
+            "class": "logging.StreamHandler",
+            "formatter": "json",
+            "filters": ["worker_only"],
+        },
+        "app_file": {
+            "class": "logging.StreamHandler",
+            "formatter": "json",
+            "filters": ["app_only"],
+        },
+        "worker_file": {
+            "class": "logging.StreamHandler",
+            "formatter": "json",
+            "filters": ["worker_only"],
+        },
+    },
+    "root": {
+        "handlers": ["console_app", "console_worker", "app_file", "worker_file"],
+        "level": LOG_LEVEL,
+    },
+    "loggers": {
+        "django": {
+            "handlers": ["console_app", "app_file"],
+            "level": LOG_LEVEL,
+            "propagate": False,
+        },
+        "celery": {
+            "handlers": ["console_worker", "worker_file"],
+            "level": LOG_LEVEL,
+            "propagate": False,
+        },
+        "migrations.tasks": {
+            "handlers": ["console_worker", "worker_file"],
+            "level": LOG_LEVEL,
+            "propagate": False,
+        },
+    },
+}

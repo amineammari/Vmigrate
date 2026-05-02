@@ -1,0 +1,42 @@
+# OS
+.DS_Store
+
+# Python backend
+backend/.env
+backend/.venv/
+backend/__pycache__/
+backend/**/*.pyc
+backend/logs/
+backend/db.sqlite3
+backend/images/
+backend/backups/
+backend/*.pid
+backend/*.pid.lock
+backend/celerybeat-schedule*
+backend/celerybeat-schedule.db
+backend/celerybeat-schedule.db-journal
+.venv/
+*.pid
+*.pid.lock
+celerybeat-schedule*
+
+# Node frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/dev.out
+frontend/dev.pid
+
+# Terraform state
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+
+# IDE
+.vscode/
+.idea/
+shared-images/tmp/
+.env
+.env.example
+shared-images/

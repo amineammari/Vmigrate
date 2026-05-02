@@ -1,0 +1,141 @@
+networks:
+  vmigrate-net:
+    driver: bridge
+
+services:
+  backend:
+    build:
+      context: .
+      target: backend
+      dockerfile: Dockerfile
+    container_name: vmigrate-backend
+    env_file:
+      - .env
+    environment:
+      - NFS_ENABLED=${NFS_ENABLED:-false}
+      - NFS_PATH=${NFS_PATH:-/nfs}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - shared-images:/app/shared-images
+      - ./backend/logs:/app/logs:ro
+      - ${NFS_PATH:-/nfs}:/nfs:rw
+    networks:
+      - vmigrate-net
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    depends_on:
+      - database
+      - redis
+
+  worker:
+    build:
+      context: .
+      target: worker
+      dockerfile: Dockerfile
+    container_name: vmigrate-worker
+    env_file:
+      - .env
+    environment:
+      - VMWARE_ESXI_CONVERSION_TRANSPORT=vddk
+      - VMWARE_VDDK_LIBDIR=/opt/vmware-vddk
+      - VMWARE_VDDK_NBDKIT_PLUGIN_PATH=/usr/lib/x86_64-linux-gnu/nbdkit/plugins
+      - VMWARE_NBDKIT_FILTER_PATH=/usr/lib/x86_64-linux-gnu/nbdkit/filters
+      - MIGRATION_OUTPUT_DIR=/app/shared-images
+      - LIBGUESTFS_BACKEND=direct
+      - LIBGUESTFS_MEMSIZE=1024
+      - NFS_ENABLED=${NFS_ENABLED:-false}
+      - NFS_PATH=${NFS_PATH:-/nfs}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - vmigrate-net
+    volumes:
+      - /home/amin/Desktop/vm-migrator/shared-images:/app/shared-images
+      - ./backend/logs:/app/logs:ro
+      - ./terraform:/app/terraform:ro
+      - ~/.ssh:/root/.ssh:ro
+      - /opt/vmware-vddk:/opt/vmware-vddk:ro
+      - /var/run/libvirt:/var/run/libvirt:ro
+      - /etc/libvirt:/etc/libvirt:ro
+      - /boot:/boot:ro
+      - /lib/modules:/lib/modules:ro
+      - ${NFS_PATH:-/nfs}:/nfs:rw
+    restart: unless-stopped
+
+  beat:
+    build:
+      context: .
+      target: worker
+      dockerfile: Dockerfile
+    container_name: vmigrate-beat
+    command: celery -A core beat -l INFO --scheduler celery.beat:PersistentScheduler --schedule /tmp/celerybeat-schedule
+    env_file:
+      - .env
+    environment:
+      - CELERY_BROKER_URL=redis://host.docker.internal:16379/0
+      - CELERY_RESULT_BACKEND=redis://host.docker.internal:16379/0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./backend/logs:/app/logs:ro
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: vmigrate-redis
+    ports:
+      - "16379:6379"
+    networks:
+      - vmigrate-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  frontend:
+    build:
+      context: .
+      target: frontend
+      dockerfile: Dockerfile
+    container_name: vmigrate-frontend
+    environment:
+      - VITE_API_BASE_URL=http://backend:8000
+      - VITE_PROXY_TARGET=http://backend:8000
+    depends_on:
+      - backend
+    networks:
+      - vmigrate-net
+    ports:
+      - "80:80"
+    restart: unless-stopped
+
+  database:
+    image: mariadb:10.6
+    container_name: vmigrate-db
+    hostname: vmigrate-db
+    ports:
+      - "13306:3306"
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpassword}
+      MARIADB_DATABASE: ${DB_NAME:-vm_migrator}
+      MARIADB_USER: ${DB_USER:-vm_user}
+      MARIADB_PASSWORD: ${DB_PASSWORD:-admin}
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    networks:
+      - vmigrate-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mariadb-admin", "ping", "-h", "localhost", "-u", "root", "-p${MARIADB_ROOT_PASSWORD}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  mariadb-data:
+  shared-images:
