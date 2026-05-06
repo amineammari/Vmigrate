@@ -215,6 +215,27 @@ class OpenStackClient:
         except Exception as exc:
             raise OpenStackClientError(f"Unexpected OpenStack validation error: {exc}") from exc
 
+    def get_project_name(self) -> str | None:
+        """Get the current project name."""
+        try:
+            # Try to get from auth info
+            if hasattr(self._conn, 'auth') and hasattr(self._conn.auth, 'auth_ref'):
+                project_name = self._conn.auth.auth_ref.get('project', {}).get('name')
+                if project_name:
+                    return project_name
+            
+            # Fallback: get project by ID from identity service
+            project_id = self._conn.current_project_id
+            if project_id:
+                project = self._conn.identity.get_project(project_id)
+                if project and hasattr(project, 'name'):
+                    return project.name
+            
+            return None
+        except Exception:
+            # If anything fails, return None - it's optional info
+            return None
+
     def list_images(self) -> list[dict[str, Any]]:
         """List available images from the image service."""
         try:

@@ -238,9 +238,11 @@ def openstack_health(request):
         images, image_error = _optional_openstack_images(client)
         flavors = client.list_flavors()
         networks = client.list_networks()
+        project_name = client.get_project_name()
         return Response(
             {
                 "project_id": project_id,
+                "project_name": project_name,
                 "image_count": len(images) if image_error is None else None,
                 "flavor_count": len(flavors),
                 "network_count": len(networks),

@@ -114,7 +114,7 @@ function MigrationJobsPage() {
       <div className="stats-grid">
         <div className="stat-card">
           <p>OpenStack project</p>
-          <strong className="mono">{health?.project_id || '-'}</strong>
+          <strong>{health?.project_name || '-'}</strong>
         </div>
         <div className="stat-card">
           <p>Images</p>
