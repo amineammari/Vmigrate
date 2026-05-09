@@ -55,8 +55,37 @@ class MigrationJob(models.Model):
         db_index=True,
     )
     conversion_metadata = models.JSONField(default=dict, blank=True)
+    
+    # Progress tracking for long-running jobs (new fields for worker scalability)
+    # Allows UI to show "Converting: 45% complete" instead of just "Converting"
+    progress_percent = models.IntegerField(
+        default=0,
+        help_text="Overall job progress 0-100%"
+    )
+    current_step = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        help_text="Current sub-step (e.g., 'downloading_disk', 'converting', 'uploading')"
+    )
+    progress_details = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Detailed progress info (affected_disks, current_disk, bytes_transferred, etc.)"
+    )
+    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    started_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the actual conversion work started (after PENDING)"
+    )
+    completed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the conversion completed (VERIFIED/FAILED/ROLLED_BACK)"
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -84,6 +113,22 @@ class MigrationJob(models.Model):
 
         self.status = new_status
         self.save(update_fields=["status", "updated_at"])
+    
+    def update_progress(self, percent: int, step: str = "", details: dict = None):
+        """
+        Update job progress safely.
+        
+        Args:
+            percent: Progress percentage 0-100
+            step: Current step name (e.g., "converting")
+            details: Dict with additional progress info
+        """
+        self.progress_percent = max(0, min(100, percent))  # Clamp to 0-100
+        if step:
+            self.current_step = step
+        if details:
+            self.progress_details.update(details)
+        self.save(update_fields=["progress_percent", "current_step", "progress_details", "updated_at"])
 
 
 class DiscoveredVM(models.Model):

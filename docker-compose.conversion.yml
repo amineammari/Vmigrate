@@ -1,0 +1,63 @@
+name: vm-migrator-conversion
+
+services:
+  conversion-worker:
+    build:
+      context: .
+      dockerfile: docker/dockerfiles/conversion-worker.Dockerfile
+      args:
+        TERRAFORM_VERSION: ${TERRAFORM_VERSION:-1.7.5}
+    image: vm-migrator/conversion-worker:${VM_MIGRATOR_VERSION:-local}
+    container_name: vmigrate-conversion-worker
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-mysql://vm_user:admin@db:3306/vm_migrator?charset=utf8mb4}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      ENABLE_REAL_CONVERSION: ${ENABLE_REAL_CONVERSION:-true}
+      MIGRATION_OUTPUT_DIR: /var/lib/vm-migrator/images
+      ARTIFACT_BACKUP_DIR: /var/lib/vm-migrator/images/backups
+      LIBGUESTFS_BACKEND: ${LIBGUESTFS_BACKEND:-direct}
+      LIBGUESTFS_MEMSIZE: ${LIBGUESTFS_MEMSIZE:-2048}
+      VMWARE_ESXI_CONVERSION_TRANSPORT: ${VMWARE_ESXI_CONVERSION_TRANSPORT:-vddk}
+      VMWARE_VDDK_LIBDIR: ${VMWARE_VDDK_LIBDIR:-/opt/vmware-vddk}
+      VMWARE_VDDK_NBDKIT_PLUGIN_PATH: ${VMWARE_VDDK_NBDKIT_PLUGIN_PATH:-/usr/lib/x86_64-linux-gnu/nbdkit/plugins}
+      VMWARE_NBDKIT_FILTER_PATH: ${VMWARE_NBDKIT_FILTER_PATH:-/usr/lib/x86_64-linux-gnu/nbdkit/filters}
+      TERRAFORM_PLUGIN_CACHE_DIR: /opt/terraform/plugin-cache
+      TF_PLUGIN_CACHE_DIR: /opt/terraform/plugin-cache
+      CELERY_WORKER_CONCURRENCY: ${CONVERSION_WORKER_CONCURRENCY:-2}
+      CELERY_WORKER_PREFETCH_MULTIPLIER: ${CONVERSION_WORKER_PREFETCH_MULTIPLIER:-1}
+    volumes:
+      - conversion-images:/var/lib/vm-migrator/images
+      - conversion-logs:/app/logs
+      - conversion-guestfs-cache:/var/cache/guestfs
+      - conversion-terraform-cache:/opt/terraform/plugin-cache
+      - worker-ssh:/home/appuser/.ssh:ro
+      # VDDK is vendor-licensed. Prefer baking it into the image for air-gapped
+      # deployments; mount it here only when your license/process requires it.
+      # - /opt/vmware-vddk:/opt/vmware-vddk:ro
+      # Optional host libvirt integration for libvirt_esx or local libvirt workflows.
+      # Enable only on Linux conversion hosts that intentionally expose libvirt.
+      # - /var/run/libvirt:/var/run/libvirt:ro
+      # - /etc/libvirt:/etc/libvirt:ro
+    networks:
+      - control-plane
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/conversion-worker-healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 60s
+
+networks:
+  control-plane:
+    external: true
+    name: vm-migrator-control
+
+volumes:
+  conversion-images:
+  conversion-logs:
+  conversion-guestfs-cache:
+  conversion-terraform-cache:
+  worker-ssh:

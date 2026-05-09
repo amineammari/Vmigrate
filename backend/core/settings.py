@@ -54,6 +54,8 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    # Session activity tracking and inactivity timeout (must run after AuthenticationMiddleware)
+    "users.middleware.SessionActivityMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
@@ -109,6 +111,13 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "users.User"
 
+# ---- Default Superadmin User Initialization ----
+# Automatically created on first app launch if no superadmin exists (idempotent)
+# These are read from environment variables; update in .env for your deployment
+DEFAULT_SUPERADMIN_USERNAME = env("DEFAULT_SUPERADMIN_USERNAME", default="superadmin")
+DEFAULT_SUPERADMIN_EMAIL = env("DEFAULT_SUPERADMIN_EMAIL", default="superadmin@local")
+DEFAULT_SUPERADMIN_PASSWORD = env("DEFAULT_SUPERADMIN_PASSWORD", default="ChangeMe123!")
+
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
@@ -126,6 +135,13 @@ SIMPLE_JWT = {
     "UPDATE_LAST_LOGIN": True,
 }
 
+# ---- Session Management (Inactivity Timeout) ----
+# Sessions expire after 2 hours of inactivity (sliding window)
+# Every authenticated request resets the inactivity timer
+# If inactive: next request returns 401 "Session expired"
+# This only affects HTTP requests; background jobs continue running
+SESSION_INACTIVITY_TIMEOUT_SECONDS = env.int("SESSION_INACTIVITY_TIMEOUT_SECONDS", default=7200)  # 2 hours
+
 # Celery core settings
 CELERY_BROKER_URL = env("REDIS_URL", default="redis://127.0.0.1:6379/0")
 CELERY_RESULT_BACKEND = env("REDIS_URL", default="redis://127.0.0.1:6379/0")
@@ -134,15 +150,49 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 
-# Celery reliability and safe worker defaults
+# ---- Celery Reliability Configuration ----
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
-CELERY_TASK_ACKS_LATE = True
-CELERY_TASK_REJECT_ON_WORKER_LOST = True
-CELERY_WORKER_PREFETCH_MULTIPLIER = env.int("CELERY_WORKER_PREFETCH_MULTIPLIER", default=1)
-CELERY_WORKER_CONCURRENCY = env.int("CELERY_WORKER_CONCURRENCY", default=2)
-CELERY_TASK_SOFT_TIME_LIMIT = env.int("CELERY_TASK_SOFT_TIME_LIMIT", default=3600)
-CELERY_TASK_TIME_LIMIT = env.int("CELERY_TASK_TIME_LIMIT", default=3900)
-CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_ACKS_LATE = True  # Acknowledge task only after successful completion
+CELERY_TASK_REJECT_ON_WORKER_LOST = True  # Reject task if worker dies during execution
+CELERY_TASK_TRACK_STARTED = True  # Track task state as "started"
+
+# ---- Celery Scalability Configuration (for 200 concurrent migrations) ----
+# These settings allow the system to handle complex, long-running conversion tasks
+# while maintaining high throughput and low memory overhead.
+
+# MAX_CONCURRENT_MIGRATIONS: Target capacity (200 recommended)
+MAX_CONCURRENT_MIGRATIONS = env.int("MAX_CONCURRENT_MIGRATIONS", default=200)
+
+# CELERY_WORKER_CONCURRENCY: Concurrent tasks per worker process
+# Increased from 2 (old) to 50 (new) to enable horizontal scaling
+# With 4 workers: 4 × 50 = 200 concurrent
+# Set based on: target capacity / number of worker containers
+# Formula: MAX_CONCURRENT_MIGRATIONS / number_of_workers
+CELERY_WORKER_CONCURRENCY = env.int("CELERY_WORKER_CONCURRENCY", default=50)
+
+# CELERY_WORKER_PREFETCH_MULTIPLIER: Tasks pre-fetched by each worker
+# Controls job distribution among workers
+# Default 1 is conservative; 4 improves throughput when job duration is predictable
+# Keep low (1-4) for long-running jobs to avoid runner starvation
+CELERY_WORKER_PREFETCH_MULTIPLIER = env.int("CELERY_WORKER_PREFETCH_MULTIPLIER", default=4)
+
+# CELERY_WORKER_MAX_TASKS_PER_CHILD: Force worker restart after N tasks
+# Prevents memory leaks from accumulating (especially with virt-v2v, SSH, subprocess-heavy work)
+# Recommended: 100-200 for long-running CPU-intensive tasks
+CELERY_WORKER_MAX_TASKS_PER_CHILD = env.int("CELERY_WORKER_MAX_TASKS_PER_CHILD", default=100)
+
+# Connection pooling (Celery to broker)
+# Important: Redis connection pool to prevent "too many connections" errors
+# Each worker + prefetch multiplier = N concurrent broker connections
+CELERY_BROKER_POOL_LIMIT = env.int("CELERY_BROKER_POOL_LIMIT", default=10)
+CELERY_BROKER_CONNECTION_RETRY = True
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+
+# Task timeouts: migrations can take hours (especially for large VMs)
+CELERY_TASK_SOFT_TIME_LIMIT = env.int("CELERY_TASK_SOFT_TIME_LIMIT", default=3600)  # 1 hour (grace period)
+CELERY_TASK_TIME_LIMIT = env.int("CELERY_TASK_TIME_LIMIT", default=3900)  # 1.5 hours (hard limit)
+
+# Task retry and publishing configuration
 CELERY_TASK_DEFAULT_RETRY_DELAY = env.int("CELERY_TASK_DEFAULT_RETRY_DELAY", default=30)
 CELERY_TASK_PUBLISH_RETRY = True
 CELERY_TASK_PUBLISH_RETRY_POLICY = {
@@ -151,6 +201,34 @@ CELERY_TASK_PUBLISH_RETRY_POLICY = {
     "interval_step": 0.5,
     "interval_max": 3,
 }
+
+# ---- Task Queue Configuration (with routing by job type) ----
+# Allows specialized workers for different task types:
+# - Migrations: high priority, long-running conversion tasks
+# - Discovery: medium priority, quick VMware inventory queries
+# - Provisioning: medium priority, Terraform/OpenStack infrastructure tasks
+# - Celery: catchall for other tasks (ping, healthchecks, etc.)
+
+from kombu import Exchange, Queue as CeleryQueue
+
+CELERY_TASK_QUEUES = (
+    CeleryQueue('migrations', Exchange('migrations', type='direct'), routing_key='migrations'),
+    CeleryQueue('discovery', Exchange('discovery', type='direct'), routing_key='discovery'),
+    CeleryQueue('provisioning', Exchange('provisioning', type='direct'), routing_key='provisioning'),
+    CeleryQueue('celery', Exchange('celery', type='direct'), routing_key='celery', priority=0),
+)
+
+CELERY_TASK_ROUTING = {
+    'migrations.start_migration': {'queue': 'migrations', 'routing_key': 'migrations'},
+    'migrations.rollback_migration': {'queue': 'migrations', 'routing_key': 'migrations'},
+    'migrations.discover_vmware_vms': {'queue': 'discovery', 'routing_key': 'discovery'},
+    'migrations.provision_openstack_infra': {'queue': 'provisioning', 'routing_key': 'provisioning'},
+}
+
+# Task priorities (higher = more important)
+# Can be used to prioritize critical tasks during high load
+CELERY_TASK_QUEUE_MAX_PRIORITY = 10
+CELERY_TASK_DEFAULT_PRIORITY = 5
 
 # Periodic discovery (Celery beat)
 ENABLE_PERIODIC_DISCOVERY = env.bool("ENABLE_PERIODIC_DISCOVERY", default=False)

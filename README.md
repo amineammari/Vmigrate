@@ -156,6 +156,14 @@ graph TD
 
 ## 6. 🐳 Docker Deployment Guide
 
+> **Current container architecture:** the production Docker layout is now split
+> into a portable control plane and a dedicated Linux conversion worker. Use
+> [`docs/container-architecture.md`](docs/container-architecture.md) as the
+> source of truth for Dockerfiles, compose files, air-gapped deployment, and
+> worker runtime requirements. Older snippets in this README that mention a
+> single multi-stage `Dockerfile` or a `worker` service in the main compose file
+> are retained as historical guidance and should not be used for new deployments.
+
 ### 📋 Prerequisites
 
 Ensure the following tools are installed on your system:
