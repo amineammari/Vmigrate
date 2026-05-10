@@ -7,7 +7,7 @@ services:
       dockerfile: docker/dockerfiles/conversion-worker.Dockerfile
       args:
         TERRAFORM_VERSION: ${TERRAFORM_VERSION:-1.7.5}
-    image: vm-migrator/conversion-worker:${VM_MIGRATOR_VERSION:-local}
+    image: ${VM_MIGRATOR_CONVERSION_WORKER_IMAGE:-vm-migrator/conversion-worker}:${VM_MIGRATOR_VERSION:-local}
     container_name: vmigrate-conversion-worker
     env_file:
       - .env

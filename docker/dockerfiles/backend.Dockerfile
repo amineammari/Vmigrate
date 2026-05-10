@@ -28,9 +28,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 COPY backend /app
 COPY docker/entrypoints/backend.sh /usr/local/bin/backend-entrypoint
 COPY docker/entrypoints/celery-beat.sh /usr/local/bin/celery-beat-entrypoint
+COPY docker/entrypoints/celery-worker.sh /usr/local/bin/celery-worker-entrypoint
 COPY docker/healthchecks/backend-healthcheck.sh /usr/local/bin/backend-healthcheck
 
-RUN chmod +x /usr/local/bin/backend-entrypoint /usr/local/bin/celery-beat-entrypoint /usr/local/bin/backend-healthcheck \
+RUN chmod +x /usr/local/bin/backend-entrypoint /usr/local/bin/celery-beat-entrypoint /usr/local/bin/celery-worker-entrypoint /usr/local/bin/backend-healthcheck \
     && mkdir -p /app/staticfiles /app/logs /var/lib/vm-migrator/beat \
     && chown -R appuser:appuser /app /var/lib/vm-migrator
 

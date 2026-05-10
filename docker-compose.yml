@@ -49,7 +49,7 @@ services:
     build:
       context: .
       dockerfile: docker/dockerfiles/backend.Dockerfile
-    image: vm-migrator/backend:${VM_MIGRATOR_VERSION:-local}
+    image: ${VM_MIGRATOR_BACKEND_IMAGE:-vm-migrator/backend}:${VM_MIGRATOR_VERSION:-local}
     container_name: vmigrate-backend
     env_file:
       - .env
@@ -84,8 +84,36 @@ services:
       retries: 6
       start_period: 40s
 
+  worker:
+    image: ${VM_MIGRATOR_BACKEND_IMAGE:-vm-migrator/backend}:${VM_MIGRATOR_VERSION:-local}
+    container_name: vmigrate-worker
+    command: ["celery", "-A", "core", "worker", "-l", "INFO", "-Q", "migrations,discovery,provisioning,celery", "--hostname", "worker@%h"]
+    entrypoint: ["/usr/local/bin/celery-worker-entrypoint"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-mysql://vm_user:admin@db:3306/vm_migrator?charset=utf8mb4}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      MIGRATION_OUTPUT_DIR: /var/lib/vm-migrator/images
+      LOG_DIR: /app/logs
+      ENABLE_REAL_CONVERSION: "false"
+      ENABLE_ANSIBLE_CONVERSION: "false"
+      ENABLE_TERRAFORM_FROM_CELERY: "false"
+    volumes:
+      - backend-logs:/app/logs
+    networks:
+      - control-plane
+    depends_on:
+      backend:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   beat:
-    image: vm-migrator/backend:${VM_MIGRATOR_VERSION:-local}
+    image: ${VM_MIGRATOR_BACKEND_IMAGE:-vm-migrator/backend}:${VM_MIGRATOR_VERSION:-local}
     container_name: vmigrate-beat
     command: ["/usr/local/bin/celery-beat-entrypoint"]
     env_file:
@@ -119,7 +147,7 @@ services:
     build:
       context: .
       dockerfile: docker/dockerfiles/frontend.Dockerfile
-    image: vm-migrator/frontend:${VM_MIGRATOR_VERSION:-local}
+    image: ${VM_MIGRATOR_FRONTEND_IMAGE:-vm-migrator/frontend}:${VM_MIGRATOR_VERSION:-local}
     container_name: vmigrate-frontend
     networks:
       - control-plane
