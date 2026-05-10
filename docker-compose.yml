@@ -85,22 +85,37 @@ services:
       start_period: 40s
 
   worker:
-    image: ${VM_MIGRATOR_BACKEND_IMAGE:-vm-migrator/backend}:${VM_MIGRATOR_VERSION:-local}
+    build:
+      context: .
+      dockerfile: docker/dockerfiles/conversion-worker.Dockerfile
+      args:
+        TERRAFORM_VERSION: ${TERRAFORM_VERSION:-1.7.5}
+    image: ${VM_MIGRATOR_CONVERSION_WORKER_IMAGE:-vm-migrator/conversion-worker}:${VM_MIGRATOR_VERSION:-local}
     container_name: vmigrate-worker
     command: ["celery", "-A", "core", "worker", "-l", "INFO", "-Q", "migrations,discovery,provisioning,celery", "--hostname", "worker@%h"]
-    entrypoint: ["/usr/local/bin/celery-worker-entrypoint"]
+    entrypoint: ["/usr/local/bin/conversion-worker-entrypoint"]
     env_file:
       - .env
     environment:
       DATABASE_URL: ${DATABASE_URL:-mysql://vm_user:admin@db:3306/vm_migrator?charset=utf8mb4}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       MIGRATION_OUTPUT_DIR: /var/lib/vm-migrator/images
+      ARTIFACT_BACKUP_DIR: /var/lib/vm-migrator/images/backups
       LOG_DIR: /app/logs
-      ENABLE_REAL_CONVERSION: "false"
-      ENABLE_ANSIBLE_CONVERSION: "false"
-      ENABLE_TERRAFORM_FROM_CELERY: "false"
+      ENABLE_REAL_CONVERSION: "true"
+      ENABLE_ANSIBLE_CONVERSION: "true"
+      ENABLE_TERRAFORM_FROM_CELERY: "true"
+      LIBGUESTFS_BACKEND: ${LIBGUESTFS_BACKEND:-direct}
+      LIBGUESTFS_MEMSIZE: ${LIBGUESTFS_MEMSIZE:-2048}
+      VMWARE_ESXI_CONVERSION_TRANSPORT: ${VMWARE_ESXI_CONVERSION_TRANSPORT:-vddk}
+      VMWARE_VDDK_LIBDIR: ${VMWARE_VDDK_LIBDIR:-/opt/vmware-vddk}
+      TERRAFORM_PLUGIN_CACHE_DIR: /opt/terraform/plugin-cache
+      TF_PLUGIN_CACHE_DIR: /opt/terraform/plugin-cache
     volumes:
+      - worker-images:/var/lib/vm-migrator/images
       - backend-logs:/app/logs
+      - worker-guestfs-cache:/var/cache/guestfs
+      - worker-terraform-cache:/opt/terraform/plugin-cache
     networks:
       - control-plane
     depends_on:
@@ -111,6 +126,12 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "celery", "-A", "core", "inspect", "active"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
   beat:
     image: ${VM_MIGRATOR_BACKEND_IMAGE:-vm-migrator/backend}:${VM_MIGRATOR_VERSION:-local}
@@ -175,3 +196,9 @@ volumes:
   backend-static:
   backend-logs:
   beat-state:
+  worker-images:
+  worker-guestfs-cache:
+  worker-terraform-cache:
+  worker-images:
+  worker-guestfs-cache:
+  worker-terraform-cache:
