@@ -10,10 +10,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        ansible \
         curl \
         default-libmysqlclient-dev \
         gcc \
+        libguestfs-tools \
+        nbdkit \
+        nbdkit-plugin-vddk \
+        openssh-client \
         pkg-config \
+        qemu-utils \
+        terraform \
+        virt-v2v \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin appuser
