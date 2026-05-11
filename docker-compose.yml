@@ -116,6 +116,8 @@ services:
       - backend-logs:/app/logs
       - worker-guestfs-cache:/var/cache/guestfs
       - worker-terraform-cache:/opt/terraform/plugin-cache
+      - /boot:/boot:ro
+      - /lib/modules:/lib/modules:ro
     networks:
       - control-plane
     extra_hosts:

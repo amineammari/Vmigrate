@@ -33,6 +33,8 @@ services:
       - conversion-guestfs-cache:/var/cache/guestfs
       - conversion-terraform-cache:/opt/terraform/plugin-cache
       - worker-ssh:/home/appuser/.ssh:ro
+      - /boot:/boot:ro
+      - /lib/modules:/lib/modules:ro
       # VDDK is vendor-licensed. Prefer baking it into the image for air-gapped
       # deployments; mount it here only when your license/process requires it.
       # - /opt/vmware-vddk:/opt/vmware-vddk:ro
