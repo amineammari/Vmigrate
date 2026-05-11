@@ -92,6 +92,7 @@ services:
         TERRAFORM_VERSION: ${TERRAFORM_VERSION:-1.7.5}
     image: ${VM_MIGRATOR_CONVERSION_WORKER_IMAGE:-vm-migrator/conversion-worker}:${VM_MIGRATOR_VERSION:-local}
     container_name: vmigrate-worker
+    user: root
     command: ["celery", "-A", "core", "worker", "-l", "INFO", "-Q", "migrations,discovery,provisioning,celery", "--hostname", "worker@%h"]
     entrypoint: ["/usr/local/bin/conversion-worker-entrypoint"]
     env_file:

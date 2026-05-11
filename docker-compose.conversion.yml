@@ -9,6 +9,7 @@ services:
         TERRAFORM_VERSION: ${TERRAFORM_VERSION:-1.7.5}
     image: ${VM_MIGRATOR_CONVERSION_WORKER_IMAGE:-vm-migrator/conversion-worker}:${VM_MIGRATOR_VERSION:-local}
     container_name: vmigrate-conversion-worker
+    user: root
     env_file:
       - .env
     environment:
