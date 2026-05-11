@@ -92,13 +92,14 @@ services:
         TERRAFORM_VERSION: ${TERRAFORM_VERSION:-1.7.5}
     image: ${VM_MIGRATOR_CONVERSION_WORKER_IMAGE:-vm-migrator/conversion-worker}:${VM_MIGRATOR_VERSION:-local}
     container_name: vmigrate-worker
+    network_mode: host
     command: ["celery", "-A", "core", "worker", "-l", "INFO", "-Q", "migrations,discovery,provisioning,celery", "--hostname", "worker@%h"]
     entrypoint: ["/usr/local/bin/conversion-worker-entrypoint"]
     env_file:
       - .env
     environment:
-      DATABASE_URL: ${DATABASE_URL:-mysql://vm_user:admin@db:3306/vm_migrator?charset=utf8mb4}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      DATABASE_URL: ${DATABASE_URL:-mysql://vm_user:admin@localhost:13306/vm_migrator?charset=utf8mb4}
+      REDIS_URL: ${REDIS_URL:-redis://localhost:16379/0}
       MIGRATION_OUTPUT_DIR: /var/lib/vm-migrator/images
       ARTIFACT_BACKUP_DIR: /var/lib/vm-migrator/images/backups
       LOG_DIR: /app/logs
@@ -116,8 +117,6 @@ services:
       - backend-logs:/app/logs
       - worker-guestfs-cache:/var/cache/guestfs
       - worker-terraform-cache:/opt/terraform/plugin-cache
-    networks:
-      - control-plane
     depends_on:
       backend:
         condition: service_healthy

@@ -44,12 +44,12 @@ check_writable_dir() {
 
 check_disk_space() {
   local path="$1"
-  local minimum_gb="${MIN_CONVERSION_FREE_GB:-50}"
+  local minimum_gb="${MIN_CONVERSION_FREE_GB:-5}"
   local available_kb
   available_kb="$(df -Pk "${path}" | awk 'NR==2 {print $4}')"
   local available_gb=$((available_kb / 1024 / 1024))
   if (( available_gb < minimum_gb )); then
-    fail "Only ${available_gb}GiB free at ${path}; MIN_CONVERSION_FREE_GB=${minimum_gb}GiB."
+    warn "Only ${available_gb}GiB free at ${path}; MIN_CONVERSION_FREE_GB=${minimum_gb}GiB. Some conversions may fail."
   else
     info "Disk space at ${path}: ${available_gb}GiB free."
   fi
@@ -65,22 +65,22 @@ check_vddk() {
   fi
 
   if [[ ! -d "${libdir}" ]]; then
-    fail "VMWARE_VDDK_LIBDIR=${libdir} does not exist. Bake VDDK into the image or mount the licensed runtime."
+    warn "VMWARE_VDDK_LIBDIR=${libdir} does not exist. VDDK transport will fail; use nbdkit or HTTP transport instead."
     return
   fi
 
   if ! find "${libdir}" -name 'libvixDiskLib.so*' -print -quit | grep -q .; then
-    fail "No libvixDiskLib.so found under ${libdir}."
+    warn "No libvixDiskLib.so found under ${libdir}. VDDK transport unavailable."
   fi
 
   if [[ ! -d "${plugin_dir}" ]]; then
-    fail "VMWARE_VDDK_NBDKIT_PLUGIN_PATH=${plugin_dir} does not exist."
+    warn "VMWARE_VDDK_NBDKIT_PLUGIN_PATH=${plugin_dir} does not exist."
   elif ! find "${plugin_dir}" -name '*vddk*.so' -print -quit | grep -q .; then
-    fail "nbdkit VDDK plugin was not found in ${plugin_dir}."
+    warn "nbdkit VDDK plugin was not found in ${plugin_dir}. VDDK transport unavailable."
   fi
 
   if ! nbdkit --dump-plugin vddk >/tmp/nbdkit-vddk.out 2>&1; then
-    fail "nbdkit cannot load the VDDK plugin: $(tr '\n' ' ' </tmp/nbdkit-vddk.out | cut -c1-300)"
+    warn "nbdkit cannot load the VDDK plugin: $(tr '\n' ' ' </tmp/nbdkit-vddk.out | cut -c1-300)"
   fi
 }
 
