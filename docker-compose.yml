@@ -117,8 +117,7 @@ services:
       - worker-guestfs-cache:/var/cache/guestfs
       - worker-terraform-cache:/opt/terraform/plugin-cache
     networks:
-      control-plane:
-        ipv4_address: 172.20.0.10
+      - control-plane
     extra_hosts:
       - "vmware.local:192.168.72.242"
     depends_on:
