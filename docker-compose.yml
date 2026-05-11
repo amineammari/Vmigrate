@@ -110,6 +110,8 @@ services:
       LIBGUESTFS_MEMSIZE: ${LIBGUESTFS_MEMSIZE:-2048}
       VMWARE_ESXI_CONVERSION_TRANSPORT: ${VMWARE_ESXI_CONVERSION_TRANSPORT:-vddk}
       VMWARE_VDDK_LIBDIR: ${VMWARE_VDDK_LIBDIR:-/opt/vmware-vddk}
+      VMWARE_VDDK_NBDKIT_PLUGIN_PATH: ${VMWARE_VDDK_NBDKIT_PLUGIN_PATH:-/usr/lib/x86_64-linux-gnu/nbdkit/plugins}
+      VMWARE_NBDKIT_FILTER_PATH: ${VMWARE_NBDKIT_FILTER_PATH:-/usr/lib/x86_64-linux-gnu/nbdkit/filters}
       TERRAFORM_PLUGIN_CACHE_DIR: /opt/terraform/plugin-cache
       TF_PLUGIN_CACHE_DIR: /opt/terraform/plugin-cache
     volumes:
@@ -119,6 +121,8 @@ services:
       - worker-terraform-cache:/opt/terraform/plugin-cache
       - /boot:/boot:ro
       - /lib/modules:/lib/modules:ro
+      - /opt/vmware-vddk:/opt/vmware-vddk:ro
+      - /usr/lib/x86_64-linux-gnu/nbdkit/plugins:/usr/lib/x86_64-linux-gnu/nbdkit/plugins:ro
     networks:
       - control-plane
     extra_hosts:
