@@ -64,6 +64,7 @@ RUN python -m pip install --upgrade pip setuptools wheel \
 COPY backend /app
 COPY ansible /app/ansible
 COPY terraform /app/terraform
+COPY offline/vendor/terraform/terraform /usr/local/bin/terraform
 COPY offline/vendor/vddk/ /opt/vmware-vddk/
 COPY docker/entrypoints/conversion-worker.sh /usr/local/bin/conversion-worker-entrypoint
 COPY docker/healthchecks/conversion-worker-healthcheck.sh /usr/local/bin/conversion-worker-healthcheck
@@ -75,6 +76,7 @@ COPY docker/worker/preflight.sh /usr/local/bin/conversion-worker-preflight
 COPY offline/vendor/nbdkit-vddk-plugin.so /usr/lib/x86_64-linux-gnu/nbdkit/plugins/nbdkit-vddk-plugin.so
 
 RUN chmod +x /usr/local/bin/conversion-worker-entrypoint /usr/local/bin/conversion-worker-healthcheck /usr/local/bin/conversion-worker-preflight \
+    && chmod 755 /usr/local/bin/terraform \
     && mkdir -p /var/lib/vm-migrator/images /var/cache/guestfs /opt/terraform/plugin-cache /app/logs /opt/vmware-vddk \
         && chown -R appuser:appuser /app /var/lib/vm-migrator /var/cache/guestfs /opt/terraform \
         && if [ -f /usr/lib/x86_64-linux-gnu/nbdkit/plugins/nbdkit-vddk-plugin.so ]; then \

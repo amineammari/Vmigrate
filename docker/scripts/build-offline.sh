@@ -116,6 +116,14 @@ check_offline_resources() {
     else
         log_info "Found VDDK files in offline/vendor/vddk/"
     fi
+
+    # Check Terraform binary
+    if [[ ! -f "${PROJECT_DIR}/offline/vendor/terraform/terraform" ]]; then
+        log_warn "Missing offline/vendor/terraform/terraform - conversion worker will not include terraform"
+        log_warn "Copy with: cp /usr/bin/terraform offline/vendor/terraform/terraform"
+    else
+        log_info "Found Terraform binary in offline/vendor/terraform/terraform"
+    fi
     
     # Check frontend resources
     if [[ ! -d "${PROJECT_DIR}/frontend/node_modules" ]]; then
