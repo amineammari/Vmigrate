@@ -1,0 +1,207 @@
+name: vm-migrator-offline
+
+# Air-gapped, completely self-contained deployment
+# All images built locally, no external registry pulls
+# All dependencies vendored in docker images
+
+services:
+  db:
+    image: mariadb:10.11.8
+    container_name: vmigrate-db-offline
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpassword}
+      MARIADB_DATABASE: ${DB_NAME:-vm_migrator}
+      MARIADB_USER: ${DB_USER:-vm_user}
+      MARIADB_PASSWORD: ${DB_PASSWORD:-admin}
+    volumes:
+      - mariadb-data-offline:/var/lib/mysql
+    networks:
+      control-plane-offline:
+        aliases:
+          - database
+          - vmigrate-db
+    ports:
+      - "${DB_PUBLISHED_PORT:-13306}:3306"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 -uroot -p$${MARIADB_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  redis:
+    image: redis:7.2.5-alpine
+    container_name: vmigrate-redis-offline
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data-offline:/data
+    networks:
+      control-plane-offline:
+        aliases:
+          - vmigrate-redis
+    ports:
+      - "${REDIS_PUBLISHED_PORT:-16379}:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/dockerfiles/backend-offline.Dockerfile
+    image: ${VM_MIGRATOR_BACKEND_IMAGE:-vm-migrator/backend}:${VM_MIGRATOR_VERSION:-offline}
+    container_name: vmigrate-backend-offline
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-mysql://vm_user:admin@db:3306/vm_migrator?charset=utf8mb4}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      MIGRATION_OUTPUT_DIR: /var/lib/vm-migrator/images
+      LOG_DIR: /app/logs
+      NFS_ENABLED: "false"
+      ENABLE_REAL_CONVERSION: ${ENABLE_REAL_CONVERSION:-true}
+      ENABLE_ANSIBLE_CONVERSION: ${ENABLE_ANSIBLE_CONVERSION:-false}
+      ENABLE_TERRAFORM_FROM_CELERY: ${ENABLE_TERRAFORM_FROM_CELERY:-false}
+    volumes:
+      - backend-static-offline:/app/staticfiles
+      - backend-logs-offline:/app/logs
+      - migration-images-offline:/var/lib/vm-migrator/images
+      - /boot:/boot:ro
+      - /lib/modules:/lib/modules:ro
+    networks:
+      control-plane-offline:
+        aliases:
+          - vmigrate-backend
+    ports:
+      - "${BACKEND_PUBLISHED_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; urllib.request.urlopen('http://localhost:8000/api/health')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/dockerfiles/frontend-offline.Dockerfile
+    image: ${VM_MIGRATOR_FRONTEND_IMAGE:-vm-migrator/frontend}:${VM_MIGRATOR_VERSION:-offline}
+    container_name: vmigrate-frontend-offline
+    networks:
+      control-plane-offline:
+        aliases:
+          - vmigrate-frontend
+    ports:
+      - "${FRONTEND_PUBLISHED_PORT:-3000}:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1/ >/dev/null"]
+
+  celery-worker:
+    build:
+      context: .
+      dockerfile: docker/dockerfiles/conversion-worker-offline.Dockerfile
+    image: ${VM_MIGRATOR_WORKER_IMAGE:-vm-migrator/conversion-worker}:${VM_MIGRATOR_VERSION:-offline}
+    container_name: vmigrate-conversion-worker-offline
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-mysql://vm_user:admin@db:3306/vm_migrator?charset=utf8mb4}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      MIGRATION_OUTPUT_DIR: /var/lib/vm-migrator/images
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      ENABLE_REAL_CONVERSION: ${ENABLE_REAL_CONVERSION:-true}
+      VMWARE_ESXI_CONVERSION_TRANSPORT: ${VMWARE_ESXI_CONVERSION_TRANSPORT:-vddk}
+      SKIP_CONVERSION_PREFLIGHT: ${SKIP_CONVERSION_PREFLIGHT:-false}
+      LIBGUESTFS_BACKEND: direct
+      # VDDK configuration
+      VMWARE_VDDK_LIBDIR: /opt/vmware-vddk
+      VMWARE_VDDK_CONFIG: /opt/vmware-vddk/lib64
+      LD_LIBRARY_PATH: /opt/vmware-vddk/lib64:${LD_LIBRARY_PATH:-}
+      LD_PRELOAD: /usr/lib/x86_64-linux-gnu/libstdc++.so.6:/lib/x86_64-linux-gnu/libgcc_s.so.1
+    volumes:
+      - migration-images-offline:/var/lib/vm-migrator/images
+      - celery-logs-offline:/app/logs
+      - /boot:/boot:ro
+      - /lib/modules:/lib/modules:ro
+    networks:
+      control-plane-offline:
+        aliases:
+          - conversion-worker
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    user: root
+    command: sh -lc 'LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6:/lib/x86_64-linux-gnu/libgcc_s.so.1 LD_LIBRARY_PATH=/opt/vmware-vddk/lib64:$LD_LIBRARY_PATH /usr/local/bin/celery -A core worker -l INFO -Q migrations,discovery,provisioning,celery --hostname conversion@%h'
+    healthcheck:
+      # Check conversion worker internal HTTP stats endpoint without depending on curl
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:5555/api/stats/').getcode()\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  celery-beat:
+    build:
+      context: .
+      dockerfile: docker/dockerfiles/backend-offline.Dockerfile
+    image: ${VM_MIGRATOR_BACKEND_IMAGE:-vm-migrator/backend}:${VM_MIGRATOR_VERSION:-offline}
+    container_name: vmigrate-celery-beat-offline
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-mysql://vm_user:admin@db:3306/vm_migrator?charset=utf8mb4}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      ENABLE_REAL_CONVERSION: ${ENABLE_REAL_CONVERSION:-true}
+    volumes:
+      - celery-logs-offline:/app/logs
+      - celery-beat-schedule-offline:/var/lib/vm-migrator/beat
+    networks:
+      control-plane-offline:
+        aliases:
+          - celery-beat
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    command: /usr/local/bin/celery-beat-entrypoint celery -A core beat -l INFO --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os,sys; sys.exit(0 if os.path.exists('/var/lib/vm-migrator/beat/celerybeat-schedule') else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  mariadb-data-offline:
+  redis-data-offline:
+  backend-static-offline:
+  backend-logs-offline:
+  migration-images-offline:
+  celery-logs-offline:
+  celery-beat-schedule-offline:
+
+networks:
+  control-plane-offline:
+    driver: bridge

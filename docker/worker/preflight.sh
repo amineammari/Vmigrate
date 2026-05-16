@@ -79,7 +79,10 @@ check_vddk() {
     warn "nbdkit VDDK plugin was not found in ${plugin_dir}. VDDK transport unavailable."
   fi
 
-  if ! nbdkit --dump-plugin vddk >/tmp/nbdkit-vddk.out 2>&1; then
+  # Test nbdkit VDDK plugin with proper LD environment
+  if ! LD_LIBRARY_PATH="${VMWARE_VDDK_LIBDIR}/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+       LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libstdc++.so.6:/lib/x86_64-linux-gnu/libgcc_s.so.1${LD_PRELOAD:+:$LD_PRELOAD}" \
+       nbdkit --dump-plugin vddk >/tmp/nbdkit-vddk.out 2>&1; then
     warn "nbdkit cannot load the VDDK plugin: $(tr '\n' ' ' </tmp/nbdkit-vddk.out | cut -c1-300)"
   fi
 }

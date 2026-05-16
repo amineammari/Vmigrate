@@ -36,11 +36,8 @@ services:
       - worker-ssh:/home/appuser/.ssh:ro
       - /boot:/boot:ro
       - /lib/modules:/lib/modules:ro
-      - /opt/vmware-vddk:/opt/vmware-vddk:ro
-      - /usr/lib/x86_64-linux-gnu/nbdkit/plugins:/usr/lib/x86_64-linux-gnu/nbdkit/plugins:ro
       # VDDK is vendor-licensed. Prefer baking it into the image for air-gapped
       # deployments; mount it here only when your license/process requires it.
-      # - /opt/vmware-vddk:/opt/vmware-vddk:ro
       # Optional host libvirt integration for libvirt_esx or local libvirt workflows.
       # Enable only on Linux conversion hosts that intentionally expose libvirt.
       # - /var/run/libvirt:/var/run/libvirt:ro

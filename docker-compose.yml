@@ -121,8 +121,6 @@ services:
       - worker-terraform-cache:/opt/terraform/plugin-cache
       - /boot:/boot:ro
       - /lib/modules:/lib/modules:ro
-      - /opt/vmware-vddk:/opt/vmware-vddk:ro
-      - /usr/lib/x86_64-linux-gnu/nbdkit/plugins:/usr/lib/x86_64-linux-gnu/nbdkit/plugins:ro
     networks:
       - control-plane
     extra_hosts:

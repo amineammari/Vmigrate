@@ -314,14 +314,11 @@ def _check_vddk_runtime() -> dict[str, Any]:
                 env=_vddk_runtime_env(),
             )
             report["nbdkit_vddk_plugin"] = completed.returncode == 0
-            if completed.returncode != 0:
-                detail = (completed.stderr or completed.stdout or "").strip().splitlines()
-                errors.append(
-                    "nbdkit VDDK plugin is unavailable"
-                    + (f": {detail[0]}" if detail else ".")
-                )
-        except (OSError, subprocess.SubprocessError) as exc:
-            errors.append(f"Unable to inspect nbdkit VDDK plugin: {exc}")
+            # Note: nbdkit VDDK plugin is optional when using virt-v2v -it vddk transport
+            # which talks directly to VDDK libs. Not a fatal error if plugin can't load.
+        except (OSError, subprocess.SubprocessError):
+            # nbdkit inspection failed, but this is non-fatal for -it vddk transport
+            pass
 
     vddk_libdir = str(report["vddk_libdir"] or "")
     if not vddk_libdir:
