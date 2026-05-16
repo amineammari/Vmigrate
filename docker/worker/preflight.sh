@@ -156,9 +156,17 @@ require_env DATABASE_URL
 require_env REDIS_URL
 require_env MIGRATION_OUTPUT_DIR
 
-for binary in virt-v2v qemu-img guestfish virt-filesystems nbdkit terraform ansible-playbook ssh; do
-  require_bin "${binary}"
-done
+require_bin virt-v2v
+require_bin qemu-img
+require_bin guestfish
+require_bin virt-filesystems
+require_bin nbdkit
+require_bin ansible-playbook
+require_bin ssh
+
+if [[ "${ENABLE_TERRAFORM_FROM_CELERY:-false}" =~ ^(1|true|yes)$ ]]; then
+  require_bin terraform
+fi
 
 check_writable_dir "${MIGRATION_OUTPUT_DIR}"
 check_writable_dir "${ARTIFACT_BACKUP_DIR:-${MIGRATION_OUTPUT_DIR}/backups}"
