@@ -150,6 +150,27 @@ services:
         condition: service_healthy
     restart: unless-stopped
     user: root
+    # Enable full privileged access required for nested virtualization,
+    # direct device passthrough (KVM), and low-level operations performed
+    # by `qemu` / `libguestfs` (also helps VDDK when interacting with host)
+    privileged: true
+
+    # Make the host KVM device available inside the container so qemu can
+    # use hardware virtualization extensions for nested virtualization.
+    devices:
+      - /dev/kvm:/dev/kvm
+
+    # Add capabilities needed by libguestfs and qemu to manage mounts,
+    # perform certain ioctl/syscalls and configure networking for appliances.
+    cap_add:
+      - SYS_ADMIN
+      - NET_ADMIN
+
+    # Relax security profiles so qemu/libguestfs can make the syscalls
+    # they require (unconfined AppArmor and unconfined seccomp profile).
+    security_opt:
+      - apparmor=unconfined
+      - seccomp=unconfined
     command: sh -lc 'LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6:/lib/x86_64-linux-gnu/libgcc_s.so.1 LD_LIBRARY_PATH=/opt/vmware-vddk/lib64:$LD_LIBRARY_PATH /usr/local/bin/celery -A core worker -l INFO -Q migrations,discovery,provisioning,celery --hostname conversion@%h'
     healthcheck:
       # Check conversion worker internal HTTP stats endpoint without depending on curl
