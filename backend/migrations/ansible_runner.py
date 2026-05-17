@@ -27,6 +27,8 @@ class AnsibleRunner:
         extra_vars: dict[str, Any] | None = None,
         limit: str | None = None,
         timeout_seconds: int = 7200,
+        log_dir: Path | None = None,
+        runtime_env: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         playbook = Path(playbook_path).expanduser().resolve()
         inventory = Path(inventory_path).expanduser().resolve()
@@ -52,7 +54,7 @@ class AnsibleRunner:
         )
 
         started = time.monotonic()
-        run_env = os.environ.copy()
+        run_env = dict(runtime_env or os.environ.copy())
         try:
             completed = subprocess.run(
                 cmd,
@@ -74,13 +76,25 @@ class AnsibleRunner:
         duration = round(time.monotonic() - started, 3)
         status = "success" if completed.returncode == 0 else "failed"
 
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+        log_paths: dict[str, str] = {}
+        if log_dir is not None:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            stdout_path = log_dir / "ansible-playbook.stdout.log"
+            stderr_path = log_dir / "ansible-playbook.stderr.log"
+            stdout_path.write_text(stdout, encoding="utf-8", errors="replace")
+            stderr_path.write_text(stderr, encoding="utf-8", errors="replace")
+            log_paths = {"stdout": str(stdout_path), "stderr": str(stderr_path)}
+
         result = {
             "status": status,
             "returncode": completed.returncode,
             "duration_seconds": duration,
-            "stdout": completed.stdout or "",
-            "stderr": completed.stderr or "",
+            "stdout": stdout,
+            "stderr": stderr,
             "command": cmd,
+            "log_paths": log_paths,
         }
 
         logger.info(

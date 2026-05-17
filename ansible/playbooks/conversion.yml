@@ -8,6 +8,13 @@
     vm_name: "{{ vm_name | default('') }}"
     output_dir: "{{ output_dir | default('/var/lib/vm-migrator/images') }}"
     virt_v2v_command: "{{ virt_v2v_command | default('') }}"
+    conversion_log_dir: "{{ conversion_log_dir | default('') }}"
+    libguestfs_backend: "{{ libguestfs_backend | default('direct') }}"
+    libguestfs_backend_settings: "{{ libguestfs_backend_settings | default('force_tcg') }}"
+    libguestfs_memsize: "{{ libguestfs_memsize | default('768') }}"
+    libguestfs_cpus: "{{ libguestfs_cpus | default('1') }}"
+    virt_v2v_nbdkit_threads: "{{ virt_v2v_nbdkit_threads | default('1') }}"
+    virt_v2v_debug: "{{ virt_v2v_debug | default(false) }}"
 
   tasks:
     - name: Validate required input variables
@@ -23,6 +30,13 @@
         path: "{{ output_dir }}"
         state: directory
         mode: "0755"
+
+    - name: Ensure conversion log directory exists
+      ansible.builtin.file:
+        path: "{{ conversion_log_dir }}"
+        state: directory
+        mode: "0755"
+      when: conversion_log_dir | length > 0
 
     - name: Install conversion prerequisites on Debian/Ubuntu
       ansible.builtin.apt:
@@ -55,12 +69,62 @@
       register: qemu_img_version
       changed_when: false
 
-    - name: Run remote virt-v2v conversion
-      ansible.builtin.shell: "{{ virt_v2v_command }}"
+    - name: Run virt-v2v conversion with TCG-safe libguestfs settings
+      ansible.builtin.shell: |
+        set -o pipefail
+        export LIBGUESTFS_BACKEND="{{ libguestfs_backend }}"
+        export LIBGUESTFS_BACKEND_SETTINGS="{{ libguestfs_backend_settings }}"
+        export LIBGUESTFS_MEMSIZE="{{ libguestfs_memsize }}"
+        export LIBGUESTFS_CPUS="{{ libguestfs_cpus }}"
+        export LIBGUESTFS_SMP="{{ libguestfs_cpus }}"
+        export VIRT_V2V_NBDKIT_THREADS="{{ virt_v2v_nbdkit_threads }}"
+        {% if virt_v2v_debug | bool %}
+        export LIBGUESTFS_DEBUG=1
+        export LIBGUESTFS_TRACE=1
+        {% endif %}
+        {{ virt_v2v_command }}
       args:
         executable: /bin/bash
+      environment:
+        LIBGUESTFS_BACKEND: "{{ libguestfs_backend }}"
+        LIBGUESTFS_BACKEND_SETTINGS: "{{ libguestfs_backend_settings }}"
+        LIBGUESTFS_MEMSIZE: "{{ libguestfs_memsize }}"
+        LIBGUESTFS_CPUS: "{{ libguestfs_cpus }}"
+        LIBGUESTFS_SMP: "{{ libguestfs_cpus }}"
+        VIRT_V2V_NBDKIT_THREADS: "{{ virt_v2v_nbdkit_threads }}"
       register: conversion_result
       changed_when: true
+
+    - name: Persist virt-v2v stdout to log file
+      ansible.builtin.copy:
+        dest: "{{ conversion_log_dir }}/virt-v2v.stdout.log"
+        content: "{{ conversion_result.stdout | default('') }}"
+        mode: "0644"
+      when: conversion_log_dir | length > 0
+
+    - name: Persist virt-v2v stderr to log file
+      ansible.builtin.copy:
+        dest: "{{ conversion_log_dir }}/virt-v2v.stderr.log"
+        content: "{{ conversion_result.stderr | default('') }}"
+        mode: "0644"
+      when: conversion_log_dir | length > 0
+
+    - name: Persist ansible-playbook transcript
+      ansible.builtin.copy:
+        dest: "{{ conversion_log_dir }}/ansible-conversion.transcript.log"
+        content: |
+          return_code={{ conversion_result.rc | default(-1) }}
+          --- stdout ---
+          {{ conversion_result.stdout | default('') }}
+          --- stderr ---
+          {{ conversion_result.stderr | default('') }}
+        mode: "0644"
+      when: conversion_log_dir | length > 0
+
+    - name: Fail when virt-v2v returned non-zero
+      ansible.builtin.fail:
+        msg: "virt-v2v failed with rc={{ conversion_result.rc }}; see {{ conversion_log_dir }}"
+      when: conversion_result.rc != 0
 
     - name: Report conversion summary
       ansible.builtin.debug:
@@ -70,5 +134,4 @@
           virt_v2v_version: "{{ virt_v2v_version.stdout | default('unknown') }}"
           qemu_img_version: "{{ qemu_img_version.stdout | default('unknown') }}"
           return_code: "{{ conversion_result.rc | default(-1) }}"
-          stdout: "{{ conversion_result.stdout | default('') }}"
-          stderr: "{{ conversion_result.stderr | default('') }}"
+          log_dir: "{{ conversion_log_dir }}"

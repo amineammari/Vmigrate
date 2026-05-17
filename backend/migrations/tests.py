@@ -36,7 +36,7 @@ from .openstack_deployment import (
     find_flavor_choice,
 )
 from .serializers import CreateMigrationFromVMwareSerializer, VMOverridesSerializer
-from .tasks import _check_vddk_runtime, _process_virt_v2v_output, start_migration
+from .tasks import _check_vddk_runtime, _create_snapshot_if_needed, _process_virt_v2v_output, start_migration
 
 
 User = get_user_model()
@@ -112,6 +112,36 @@ class QemuImgWrapperTests(SimpleTestCase):
                     source_format="vmdk",
                     target_format="qcow2",
                 )
+
+
+class MigrationSnapshotPolicyTests(SimpleTestCase):
+    @override_settings(ENABLE_ESXI_MIGRATION_SNAPSHOT=False)
+    def test_create_snapshot_if_needed_skips_when_disabled(self):
+        job = MigrationJob(id=99, vm_name="test-vm", status=MigrationJob.Status.PRECHECK)
+        discovered = DiscoveredVM(name="test-vm", source=DiscoveredVM.Source.ESXI)
+        snapshot = _create_snapshot_if_needed(job, discovered, {})
+        self.assertEqual(snapshot["status"], "skipped")
+        self.assertIn("disabled", snapshot["reason"])
+
+
+class LibguestfsRuntimeTests(SimpleTestCase):
+    @override_settings(
+        LIBGUESTFS_BACKEND="direct",
+        LIBGUESTFS_BACKEND_SETTINGS="force_tcg",
+        LIBGUESTFS_MEMSIZE=768,
+        LIBGUESTFS_CPUS=1,
+        VIRT_V2V_NBDKIT_THREADS=1,
+    )
+    def test_build_libguestfs_runtime_env_forces_tcg_single_cpu(self):
+        from migrations.libguestfs_runtime import build_libguestfs_runtime_env
+
+        env = build_libguestfs_runtime_env({})
+        self.assertEqual(env["LIBGUESTFS_BACKEND"], "direct")
+        self.assertEqual(env["LIBGUESTFS_BACKEND_SETTINGS"], "force_tcg")
+        self.assertEqual(env["LIBGUESTFS_MEMSIZE"], "768")
+        self.assertEqual(env["LIBGUESTFS_CPUS"], "1")
+        self.assertEqual(env["LIBGUESTFS_SMP"], "1")
+        self.assertEqual(env["VIRT_V2V_NBDKIT_THREADS"], "1")
 
 
 class VirtV2VRuntimeTests(SimpleTestCase):

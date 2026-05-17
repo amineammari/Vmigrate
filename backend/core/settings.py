@@ -252,6 +252,21 @@ VIRT_V2V_TIMEOUT_SECONDS = env.int("VIRT_V2V_TIMEOUT_SECONDS", default=7200)
 VMDK_DOWNLOAD_TIMEOUT = env.int("VMDK_DOWNLOAD_TIMEOUT", default=7200)
 
 ENABLE_ROLLBACK = env.bool("ENABLE_ROLLBACK", default=True)
+# VMware pre-migration snapshots are only created when rollback is enabled.
+ENABLE_ESXI_MIGRATION_SNAPSHOT = env.bool(
+    "ENABLE_ESXI_MIGRATION_SNAPSHOT",
+    default=ENABLE_ROLLBACK,
+)
+
+# Libguestfs / qemu appliance tuning (TCG-safe defaults for Docker without KVM).
+LIBGUESTFS_BACKEND = env("LIBGUESTFS_BACKEND", default="direct")
+LIBGUESTFS_BACKEND_SETTINGS = env("LIBGUESTFS_BACKEND_SETTINGS", default="force_tcg")
+LIBGUESTFS_MEMSIZE = env.int("LIBGUESTFS_MEMSIZE", default=768)
+LIBGUESTFS_CPUS = env.int("LIBGUESTFS_CPUS", default=1)
+LIBGUESTFS_TOOLS_CONF = env("LIBGUESTFS_TOOLS_CONF", default="/etc/libguestfs-tools.conf")
+VIRT_V2V_NBDKIT_THREADS = env.int("VIRT_V2V_NBDKIT_THREADS", default=1)
+# 0 disables truncation; metadata still stores full logs on disk when persisted.
+CONVERSION_LOG_TRUNCATE_BYTES = env.int("CONVERSION_LOG_TRUNCATE_BYTES", default=0)
 
 # Minimal artifact backup (stores a copy of QCOW2 before OpenStack upload).
 ENABLE_ARTIFACT_BACKUP = env.bool("ENABLE_ARTIFACT_BACKUP", default=False)

@@ -74,6 +74,12 @@ from .openstack_deployment import (
     wait_for_volume_attachment,
 )
 from .terraform_runner import TerraformRunner, TerraformRunnerError
+from .libguestfs_runtime import (
+    build_libguestfs_runtime_env,
+    libguestfs_ansible_extra_vars,
+    migration_job_log_dir,
+    persist_execution_logs,
+)
 from .snapshot_manager import SnapshotError, create_vm_snapshot
 from .vmware_client import ESXiProvider, VMwareClientError, WorkstationVMwareClient
 from .vmdk_download import download_vmdk_from_esxi
@@ -115,10 +121,17 @@ def _openstack_session_for_job(job: MigrationJob, session_id: int | None) -> Ope
     return qs.first()
 
 
-def _truncate_log(text: str, limit: int = 12000) -> str:
-    if len(text) <= limit:
+def _truncate_log(text: str, limit: int | None = None) -> str:
+    if limit is None:
+        limit = int(getattr(settings, "CONVERSION_LOG_TRUNCATE_BYTES", 0))
+    if limit <= 0 or len(text) <= limit:
         return text
     return text[:limit] + "\n...[truncated]"
+
+
+def _migration_snapshots_enabled() -> bool:
+    """Return whether VMware pre-migration snapshots should be created."""
+    return bool(getattr(settings, "ENABLE_ESXI_MIGRATION_SNAPSHOT", True))
 
 
 def _sanitize_name(value: str) -> str:
@@ -235,7 +248,7 @@ def _ensure_libguestfs_kernel_readable() -> None:
 
 def _vddk_runtime_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
     """Build the environment virt-v2v/nbdkit need for VDDK access."""
-    run_env = dict(base_env or os.environ)
+    run_env = build_libguestfs_runtime_env(dict(base_env or os.environ))
 
     nbdkit_bin = os.getenv("VMWARE_NBDKIT_BIN", "").strip()
     nbdkit_dir = None
@@ -812,6 +825,13 @@ def _create_snapshot_if_needed(job: MigrationJob, discovered_vm: DiscoveredVM, m
     if existing.get("status") in {"created", "exists", "skipped"}:
         return existing
 
+    if not _migration_snapshots_enabled():
+        return {
+            "status": "skipped",
+            "reason": "ESXi migration snapshots disabled (ENABLE_ROLLBACK=false or ENABLE_ESXI_MIGRATION_SNAPSHOT=false)",
+            "created_at": timezone.now().isoformat(),
+        }
+
     if discovered_vm.source != DiscoveredVM.Source.ESXI:
         return {
             "status": "skipped",
@@ -1145,12 +1165,13 @@ def _execute_virt_v2v(
     plan: ConversionPlan,
     vm_name: str,
     *,
+    job_id: int | None = None,
     disk_layout_mode: str = "individual",
     prefer_sparse_output: bool = True,
 ) -> dict[str, Any]:
     start = time.monotonic()
 
-    run_env = os.environ.copy()
+    run_env = build_libguestfs_runtime_env(os.environ.copy())
 
     # Check if using host-based conversion
     use_host_conversion = getattr(settings, "USE_HOST_CONVERSION", False)
@@ -1185,6 +1206,8 @@ def _execute_virt_v2v(
     if os.getenv("VIRT_V2V_DEBUG", "").lower() in {"1", "true", "yes"}:
         run_env["LIBGUESTFS_DEBUG"] = "1"
         run_env["LIBGUESTFS_TRACE"] = "1"
+        run_env["LIBGUESTFS_TRACE_LIBVIRT"] = "1"
+        run_env["LIBGUESTFS_TRACE_LIBVIRT_URI"] = "1"
         # Insert verbose flags after 'virt-v2v'
         if command_args and command_args[0] == "virt-v2v":
             command_args = ["virt-v2v", "-v", "-x"] + command_args[1:]
@@ -1216,23 +1239,34 @@ def _execute_virt_v2v(
     if host_shared_path in output_path:
         output_path = output_path.replace(host_shared_path, container_shared_path)
     
-    return _process_virt_v2v_output(
+    result = _process_virt_v2v_output(
         plan, vm_name, completed, start, disk_layout_mode, prefer_sparse_output, output_path=output_path
     )
+    result["log_paths"] = persist_execution_logs(
+        job_id,
+        "virt-v2v",
+        completed.stdout or "",
+        completed.stderr or "",
+    )
+    return result
 
 
 def _execute_ansible_conversion(
     plan: ConversionPlan,
     vm_name: str,
     *,
+    job_id: int | None = None,
     disk_layout_mode: str = "individual",
     prefer_sparse_output: bool = True,
 ) -> dict[str, Any]:
     runner = AnsibleRunner(binary=getattr(settings, "ANSIBLE_BIN", "ansible-playbook"))
+    log_dir = migration_job_log_dir(job_id) if job_id is not None else None
     metadata_vars: dict[str, Any] = {
         "vm_name": vm_name,
         "output_dir": str(Path(plan.output_path).expanduser().parent),
         "virt_v2v_command": plan.command,
+        "conversion_log_dir": str(log_dir) if log_dir else "",
+        **libguestfs_ansible_extra_vars(),
     }
 
     result = runner.run_playbook(
@@ -1241,6 +1275,8 @@ def _execute_ansible_conversion(
         extra_vars=metadata_vars,
         limit=(getattr(settings, "ANSIBLE_LIMIT", "") or None),
         timeout_seconds=int(getattr(settings, "ANSIBLE_TIMEOUT_SECONDS", 7200)),
+        log_dir=log_dir,
+        runtime_env=build_libguestfs_runtime_env(),
     )
     if result["status"] != "success":
         raise ConversionExecutionError(
@@ -1274,11 +1310,20 @@ def _execute_ansible_conversion(
         except OSError:
             disk_sizes[str(p)] = 0
 
+    log_paths = persist_execution_logs(
+        job_id,
+        "ansible-conversion",
+        result.get("stdout", ""),
+        result.get("stderr", ""),
+        log_dir=log_dir,
+    )
+
     return {
         "returncode": result.get("returncode", 0),
         "duration_seconds": result.get("duration_seconds", 0),
         "stdout": _truncate_log(result.get("stdout", "")),
         "stderr": _truncate_log(result.get("stderr", "")),
+        "log_paths": {**log_paths, **(result.get("log_paths") or {})},
         "output_qcow2_path": str(primary_qcow2_path),
         "output_qcow2_paths": [str(p) for p in qcow2_paths],
         "primary_disk_index": primary_disk_index,
@@ -2520,8 +2565,11 @@ def start_migration(job_id: int) -> dict[str, Any]:
                 "migration.precheck.completed",
                 extra={"job_id": job.id, "vm_name": job.vm_name, "disk_count": precheck["source_inventory"]["disk_count"]},
             )
-            if job.can_transition_to(MigrationJob.Status.SNAPSHOT_CREATED):
-                job.transition(MigrationJob.Status.SNAPSHOT_CREATED)
+            if _migration_snapshots_enabled():
+                if job.can_transition_to(MigrationJob.Status.SNAPSHOT_CREATED):
+                    job.transition(MigrationJob.Status.SNAPSHOT_CREATED)
+            elif job.can_transition_to(MigrationJob.Status.DISK_ANALYZING):
+                job.transition(MigrationJob.Status.DISK_ANALYZING)
             job.refresh_from_db()
 
         if job.status == MigrationJob.Status.SNAPSHOT_CREATED:
@@ -2532,8 +2580,13 @@ def start_migration(job_id: int) -> dict[str, Any]:
             metadata["conversion"] = conversion
             job.conversion_metadata = metadata
             job.save(update_fields=["conversion_metadata", "updated_at"])
+            log_event = (
+                "migration.snapshot.skipped"
+                if snapshot.get("status") == "skipped"
+                else "migration.snapshot.created"
+            )
             logger.info(
-                "migration.snapshot.created",
+                log_event,
                 extra={"job_id": job.id, "vm_name": job.vm_name, "snapshot": snapshot},
             )
             if job.can_transition_to(MigrationJob.Status.DISK_ANALYZING):
@@ -2668,6 +2721,7 @@ def start_migration(job_id: int) -> dict[str, Any]:
                     exec_result = _execute_ansible_conversion(
                         plan,
                         discovered_vm.name,
+                        job_id=job.id,
                         disk_layout_mode=target_spec["disk_layout_mode"],
                         prefer_sparse_output=prefer_sparse_output,
                     )
@@ -2675,6 +2729,7 @@ def start_migration(job_id: int) -> dict[str, Any]:
                     exec_result = _execute_virt_v2v(
                         plan,
                         discovered_vm.name,
+                        job_id=job.id,
                         disk_layout_mode=target_spec["disk_layout_mode"],
                         prefer_sparse_output=prefer_sparse_output,
                     )

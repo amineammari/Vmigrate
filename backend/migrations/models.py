@@ -26,7 +26,7 @@ class MigrationJob(models.Model):
     TRANSITIONS = {
         Status.PENDING: {Status.DISCOVERED, Status.FAILED},
         Status.DISCOVERED: {Status.PRECHECK, Status.CONVERTING, Status.FAILED},
-        Status.PRECHECK: {Status.SNAPSHOT_CREATED, Status.FAILED},
+        Status.PRECHECK: {Status.SNAPSHOT_CREATED, Status.DISK_ANALYZING, Status.FAILED},
         Status.SNAPSHOT_CREATED: {Status.DISK_ANALYZING, Status.FAILED},
         Status.DISK_ANALYZING: {Status.CONVERTING, Status.FAILED},
         Status.CONVERTING: {Status.BLOCK_VALIDATING, Status.UPLOADING, Status.FAILED},

@@ -9,6 +9,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     DEBIAN_FRONTEND=noninteractive \
     LIBGUESTFS_BACKEND=direct \
+    LIBGUESTFS_BACKEND_SETTINGS=force_tcg \
+    LIBGUESTFS_MEMSIZE=768 \
+    LIBGUESTFS_CPUS=1 \
+    LIBGUESTFS_SMP=1 \
+    VIRT_V2V_NBDKIT_THREADS=1 \
+    LIBGUESTFS_TOOLS_CONF=/etc/libguestfs-tools.conf \
     TERRAFORM_PLUGIN_CACHE_DIR=/opt/terraform/plugin-cache \
     TF_PLUGIN_CACHE_DIR=/opt/terraform/plugin-cache
 
@@ -66,6 +72,7 @@ COPY ansible /app/ansible
 COPY terraform /app/terraform
 COPY offline/vendor/terraform/terraform /usr/local/bin/terraform
 COPY offline/vendor/vddk/ /opt/vmware-vddk/
+COPY docker/libguestfs-tools.conf /etc/libguestfs-tools.conf
 COPY docker/entrypoints/conversion-worker.sh /usr/local/bin/conversion-worker-entrypoint
 COPY docker/healthchecks/conversion-worker-healthcheck.sh /usr/local/bin/conversion-worker-healthcheck
 COPY docker/worker/preflight.sh /usr/local/bin/conversion-worker-preflight

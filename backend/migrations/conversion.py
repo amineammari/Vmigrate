@@ -166,6 +166,7 @@ def plan_vmware_conversion(
         if esxi_transport == "vddk":
             if not vddk_libdir or not vddk_thumbprint:
                 raise ConversionPlanningError("VDDK transport requires vddk_libdir and vddk_thumbprint.")
+            nbdkit_threads = int(os.getenv("VIRT_V2V_NBDKIT_THREADS", "1") or "1")
             command_args += [
                 "-it",
                 "vddk",
@@ -173,8 +174,13 @@ def plan_vmware_conversion(
                 f"vddk-libdir={vddk_libdir}",
                 "-io",
                 f"vddk-thumbprint={vddk_thumbprint}",
+                "-io",
+                f"vddk-threads={max(1, nbdkit_threads)}",
             ]
-            notes = ["esxi conversion via VDDK (requires nbdkit-vddk-plugin; VM powered off)"]
+            notes = [
+                "esxi conversion via VDDK (requires nbdkit-vddk-plugin; VM powered off)",
+                f"nbdkit/vddk threads capped to {max(1, nbdkit_threads)}",
+            ]
 
         command_args += [
             vm_guest_name,

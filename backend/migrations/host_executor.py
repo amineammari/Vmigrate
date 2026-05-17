@@ -130,8 +130,10 @@ def execute_on_host(
         port=port,
     )
 
+    from .libguestfs_runtime import build_libguestfs_runtime_env
+
     # Prepare environment - filter out variables that should not be passed to host
-    run_env = os.environ.copy()
+    run_env = build_libguestfs_runtime_env(os.environ.copy())
     # Remove variables that may cause issues on host (paths/installation-specific)
     for var in ["SUPERMIN_KERNEL", "LIBGUESTFS_CACHEDIR", "LIBGUESTFS_HV", "LIBGUESTFS_MOUNT_OPTIONS"]:
         run_env.pop(var, None)

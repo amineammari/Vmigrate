@@ -115,21 +115,38 @@ services:
       dockerfile: docker/dockerfiles/conversion-worker-offline.Dockerfile
     image: ${VM_MIGRATOR_WORKER_IMAGE:-vm-migrator/conversion-worker}:${VM_MIGRATOR_VERSION:-offline}
     container_name: vmigrate-conversion-worker-offline
+    entrypoint: ["/usr/local/bin/conversion-worker-entrypoint"]
     env_file:
       - .env
     environment:
       DATABASE_URL: ${DATABASE_URL:-mysql://vm_user:admin@db:3306/vm_migrator?charset=utf8mb4}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       MIGRATION_OUTPUT_DIR: /var/lib/vm-migrator/images
+      LOG_DIR: /app/logs
       CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
       CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      CELERY_WORKER_CONCURRENCY: ${CELERY_WORKER_CONCURRENCY:-1}
+      CELERY_WORKER_PREFETCH_MULTIPLIER: ${CELERY_WORKER_PREFETCH_MULTIPLIER:-1}
+      CELERY_WORKER_MAX_TASKS_PER_CHILD: ${CELERY_WORKER_MAX_TASKS_PER_CHILD:-5}
       ENABLE_REAL_CONVERSION: ${ENABLE_REAL_CONVERSION:-true}
+      ENABLE_ANSIBLE_CONVERSION: ${ENABLE_ANSIBLE_CONVERSION:-false}
+      ENABLE_ROLLBACK: ${ENABLE_ROLLBACK:-false}
+      ENABLE_ESXI_MIGRATION_SNAPSHOT: ${ENABLE_ESXI_MIGRATION_SNAPSHOT:-false}
+      CONVERSION_LOG_TRUNCATE_BYTES: ${CONVERSION_LOG_TRUNCATE_BYTES:-0}
+      VIRT_V2V_DEBUG: ${VIRT_V2V_DEBUG:-true}
       VMWARE_ESXI_CONVERSION_TRANSPORT: ${VMWARE_ESXI_CONVERSION_TRANSPORT:-vddk}
       SKIP_CONVERSION_PREFLIGHT: ${SKIP_CONVERSION_PREFLIGHT:-false}
-      LIBGUESTFS_BACKEND: direct
+      LIBGUESTFS_BACKEND: ${LIBGUESTFS_BACKEND:-direct}
+      LIBGUESTFS_BACKEND_SETTINGS: ${LIBGUESTFS_BACKEND_SETTINGS:-force_tcg}
+      LIBGUESTFS_MEMSIZE: ${LIBGUESTFS_MEMSIZE:-768}
+      LIBGUESTFS_CPUS: ${LIBGUESTFS_CPUS:-1}
+      LIBGUESTFS_TOOLS_CONF: ${LIBGUESTFS_TOOLS_CONF:-/etc/libguestfs-tools.conf}
+      VIRT_V2V_NBDKIT_THREADS: ${VIRT_V2V_NBDKIT_THREADS:-1}
       # VDDK configuration
       VMWARE_VDDK_LIBDIR: /opt/vmware-vddk
       VMWARE_VDDK_CONFIG: /opt/vmware-vddk/lib64
+      VMWARE_VDDK_NBDKIT_PLUGIN_PATH: ${VMWARE_VDDK_NBDKIT_PLUGIN_PATH:-/usr/lib/x86_64-linux-gnu/nbdkit/plugins}
+      VMWARE_NBDKIT_FILTER_PATH: ${VMWARE_NBDKIT_FILTER_PATH:-/usr/lib/x86_64-linux-gnu/nbdkit/filters}
       LD_LIBRARY_PATH: /opt/vmware-vddk/lib64:${LD_LIBRARY_PATH:-}
       LD_PRELOAD: /usr/lib/x86_64-linux-gnu/libstdc++.so.6:/lib/x86_64-linux-gnu/libgcc_s.so.1
     volumes:
@@ -171,7 +188,17 @@ services:
     security_opt:
       - apparmor=unconfined
       - seccomp=unconfined
-    command: sh -lc 'LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6:/lib/x86_64-linux-gnu/libgcc_s.so.1 LD_LIBRARY_PATH=/opt/vmware-vddk/lib64:$LD_LIBRARY_PATH /usr/local/bin/celery -A core worker -l INFO -Q migrations,discovery,provisioning,celery --hostname conversion@%h'
+    command:
+      - celery
+      - -A
+      - core
+      - worker
+      - -l
+      - INFO
+      - -Q
+      - migrations,discovery,provisioning,celery
+      - --hostname
+      - conversion@%h
     healthcheck:
       # Check conversion worker internal HTTP stats endpoint without depending on curl
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:5555/api/stats/').getcode()\""]
