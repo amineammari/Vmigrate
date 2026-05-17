@@ -124,6 +124,40 @@ class MigrationSnapshotPolicyTests(SimpleTestCase):
         self.assertIn("disabled", snapshot["reason"])
 
 
+class VirtV2VVersionTests(SimpleTestCase):
+    def test_parse_virt_v2v_version(self):
+        from migrations.virt_v2v_runtime import parse_virt_v2v_version
+
+        self.assertEqual(parse_virt_v2v_version("virt-v2v 2.2.0"), (2, 2, 0))
+        self.assertEqual(parse_virt_v2v_version("virt-v2v 2.3.1\n"), (2, 3, 1))
+
+    def test_vddk_threads_not_supported_on_2_2(self):
+        from migrations.virt_v2v_runtime import build_vddk_transport_args, virt_v2v_supports_vddk_threads
+
+        self.assertFalse(virt_v2v_supports_vddk_threads((2, 2, 0)))
+        args, notes = build_vddk_transport_args(
+            vddk_libdir="/opt/vmware-vddk",
+            vddk_thumbprint="AA:BB",
+            threads=1,
+            version=(2, 2, 0),
+        )
+        self.assertNotIn("vddk-threads=1", args)
+        self.assertTrue(any("omitted" in note for note in notes))
+
+    def test_vddk_threads_supported_on_2_3(self):
+        from migrations.virt_v2v_runtime import build_vddk_transport_args, virt_v2v_supports_vddk_threads
+
+        self.assertTrue(virt_v2v_supports_vddk_threads((2, 3, 0)))
+        args, _notes = build_vddk_transport_args(
+            vddk_libdir="/opt/vmware-vddk",
+            vddk_thumbprint="AA:BB",
+            threads=2,
+            version=(2, 3, 0),
+        )
+        self.assertIn("-io", args)
+        self.assertIn("vddk-threads=2", args)
+
+
 class LibguestfsRuntimeTests(SimpleTestCase):
     @override_settings(
         LIBGUESTFS_BACKEND="direct",

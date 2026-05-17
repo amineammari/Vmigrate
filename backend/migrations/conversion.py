@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import DiscoveredVM
+from .virt_v2v_runtime import build_vddk_transport_args
 from core.services.storage import storage_manager
 
 
@@ -167,20 +168,12 @@ def plan_vmware_conversion(
             if not vddk_libdir or not vddk_thumbprint:
                 raise ConversionPlanningError("VDDK transport requires vddk_libdir and vddk_thumbprint.")
             nbdkit_threads = int(os.getenv("VIRT_V2V_NBDKIT_THREADS", "1") or "1")
-            command_args += [
-                "-it",
-                "vddk",
-                "-io",
-                f"vddk-libdir={vddk_libdir}",
-                "-io",
-                f"vddk-thumbprint={vddk_thumbprint}",
-                "-io",
-                f"vddk-threads={max(1, nbdkit_threads)}",
-            ]
-            notes = [
-                "esxi conversion via VDDK (requires nbdkit-vddk-plugin; VM powered off)",
-                f"nbdkit/vddk threads capped to {max(1, nbdkit_threads)}",
-            ]
+            vddk_args, notes = build_vddk_transport_args(
+                vddk_libdir=vddk_libdir,
+                vddk_thumbprint=vddk_thumbprint,
+                threads=nbdkit_threads,
+            )
+            command_args += vddk_args
 
         command_args += [
             vm_guest_name,
