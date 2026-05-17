@@ -264,7 +264,11 @@ LIBGUESTFS_BACKEND_SETTINGS = env("LIBGUESTFS_BACKEND_SETTINGS", default="force_
 LIBGUESTFS_MEMSIZE = env.int("LIBGUESTFS_MEMSIZE", default=768)
 LIBGUESTFS_CPUS = env.int("LIBGUESTFS_CPUS", default=1)
 LIBGUESTFS_TOOLS_CONF = env("LIBGUESTFS_TOOLS_CONF", default="/etc/libguestfs-tools.conf")
+EMBEDDED_KERNEL_ROOT = env("EMBEDDED_KERNEL_ROOT", default="/usr/lib/vm-migrator/kernels")
+SUPERMIN_KERNEL = env("SUPERMIN_KERNEL", default=f"{EMBEDDED_KERNEL_ROOT}/vmlinuz")
 VIRT_V2V_NBDKIT_THREADS = env.int("VIRT_V2V_NBDKIT_THREADS", default=1)
+PREFLIGHT_STRICT = env.bool("PREFLIGHT_STRICT", default=False)
+REQUIRE_PREFLIGHT_CONNECTIVITY = env.bool("REQUIRE_PREFLIGHT_CONNECTIVITY", default=False)
 # 0 disables truncation; metadata still stores full logs on disk when persisted.
 CONVERSION_LOG_TRUNCATE_BYTES = env.int("CONVERSION_LOG_TRUNCATE_BYTES", default=0)
 

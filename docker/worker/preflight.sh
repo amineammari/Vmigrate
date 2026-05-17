@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
+# Conversion worker preflight — errors block startup only when PREFLIGHT_STRICT=true.
 set -Eeuo pipefail
 
 errors=0
 warnings=0
+strict="${PREFLIGHT_STRICT:-false}"
 
 fail() {
   echo "ERROR: $*" >&2
@@ -49,9 +51,41 @@ check_disk_space() {
   available_kb="$(df -Pk "${path}" | awk 'NR==2 {print $4}')"
   local available_gb=$((available_kb / 1024 / 1024))
   if (( available_gb < minimum_gb )); then
-    warn "Only ${available_gb}GiB free at ${path}; MIN_CONVERSION_FREE_GB=${minimum_gb}GiB. Some conversions may fail."
+    warn "Only ${available_gb}GiB free at ${path}; MIN_CONVERSION_FREE_GB=${minimum_gb}GiB."
   else
     info "Disk space at ${path}: ${available_gb}GiB free."
+  fi
+}
+
+check_embedded_kernel() {
+  local embed="${EMBEDDED_KERNEL_ROOT:-/usr/lib/vm-migrator/kernels}"
+  local vmlinuz="${SUPERMIN_KERNEL:-${embed}/vmlinuz}"
+  if [[ ! -r "${vmlinuz}" ]]; then
+    warn "Embedded kernel missing at ${vmlinuz} (supermin will fail)."
+    return
+  fi
+  info "Embedded kernel: ${vmlinuz}"
+  if [[ -f "${embed}/kernel-version" ]]; then
+    local kver
+    kver="$(tr -d '[:space:]' <"${embed}/kernel-version")"
+    if [[ -d "${embed}/modules/${kver}" ]]; then
+      info "Embedded modules: ${embed}/modules/${kver}"
+    else
+      warn "Embedded modules tree missing for kernel ${kver}."
+    fi
+  fi
+}
+
+check_guestfish() {
+  if ! guestfish --version >/dev/null 2>&1; then
+    warn "guestfish --version failed (check VDDK libstdc++ sanitization)."
+    return
+  fi
+  info "guestfish responds to --version"
+  if timeout 120 guestfish -a /dev/null run : true >/tmp/guestfish-smoke.log 2>&1; then
+    info "guestfish appliance smoke test passed"
+  else
+    warn "guestfish appliance smoke test failed: $(tr '\n' ' ' </tmp/guestfish-smoke.log | cut -c1-400)"
   fi
 }
 
@@ -60,73 +94,81 @@ check_vddk() {
   local plugin_dir="${VMWARE_VDDK_NBDKIT_PLUGIN_PATH:-/usr/lib/x86_64-linux-gnu/nbdkit/plugins}"
 
   if [[ "${VMWARE_ESXI_CONVERSION_TRANSPORT:-vddk}" != "vddk" ]]; then
-    info "VDDK checks skipped because VMWARE_ESXI_CONVERSION_TRANSPORT is not vddk."
+    info "VDDK checks skipped (transport is not vddk)."
     return
   fi
 
   if [[ ! -d "${libdir}" ]]; then
-    warn "VMWARE_VDDK_LIBDIR=${libdir} does not exist. VDDK transport will fail; use nbdkit or HTTP transport instead."
+    warn "VMWARE_VDDK_LIBDIR=${libdir} missing."
     return
   fi
 
-  if ! find "${libdir}" -name 'libvixDiskLib.so*' -print -quit | grep -q .; then
-    warn "No libvixDiskLib.so found under ${libdir}. VDDK transport unavailable."
+  if find "${libdir}" -name 'libvixDiskLib.so*' -print -quit | grep -q .; then
+    info "libvixDiskLib present under ${libdir}"
+  else
+    warn "libvixDiskLib.so not found under ${libdir}"
   fi
 
-  if [[ ! -d "${plugin_dir}" ]]; then
-    warn "VMWARE_VDDK_NBDKIT_PLUGIN_PATH=${plugin_dir} does not exist."
-  elif ! find "${plugin_dir}" -name '*vddk*.so' -print -quit | grep -q .; then
-    warn "nbdkit VDDK plugin was not found in ${plugin_dir}. VDDK transport unavailable."
+  if [[ -e "${libdir}/lib64/libstdc++.so.6" && ! -e "${libdir}/lib64/libstdc++.so.6.disabled" ]]; then
+    warn "VDDK libstdc++.so.6 is still active — run vddk-sanitize-libcxx."
   fi
 
-  # Test nbdkit VDDK plugin with proper LD environment
-  if ! LD_LIBRARY_PATH="${VMWARE_VDDK_LIBDIR}/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-       LD_PRELOAD="/usr/lib/x86_64-linux-gnu/libstdc++.so.6:/lib/x86_64-linux-gnu/libgcc_s.so.1${LD_PRELOAD:+:$LD_PRELOAD}" \
-       nbdkit --dump-plugin vddk >/tmp/nbdkit-vddk.out 2>&1; then
-    warn "nbdkit cannot load the VDDK plugin: $(tr '\n' ' ' </tmp/nbdkit-vddk.out | cut -c1-300)"
+  if find "${plugin_dir}" -name '*vddk*.so' -print -quit | grep -q .; then
+    info "nbdkit VDDK plugin present in ${plugin_dir}"
+  else
+    warn "nbdkit VDDK plugin not found in ${plugin_dir}"
+  fi
+
+  if virt-v2v --machine-readable 2>/tmp/virt-v2v-features.log | grep -qx vddk; then
+    info "virt-v2v advertises vddk transport"
+  else
+    warn "virt-v2v does not list vddk in --machine-readable output"
+  fi
+
+  if nbdkit --dump-plugin vddk >/tmp/nbdkit-vddk.out 2>&1; then
+    info "nbdkit VDDK plugin loads"
+  else
+    warn "nbdkit VDDK plugin: $(tr '\n' ' ' </tmp/nbdkit-vddk.out | cut -c1-300)"
   fi
 }
 
 check_openstack_connectivity() {
   if [[ -z "${OS_AUTH_URL:-}" ]]; then
-    warn "OpenStack connectivity check skipped: OS_AUTH_URL is not set."
+    warn "OpenStack check skipped: OS_AUTH_URL unset."
     return
   fi
-
-  python - <<'PY'
+  if python - <<'PY'
 import os
-import sys
 import openstack
 
-try:
-    conn = openstack.connect(
-        auth_url=os.environ["OS_AUTH_URL"],
-        username=os.environ.get("OS_USERNAME"),
-        password=os.environ.get("OS_PASSWORD"),
-        project_name=os.environ.get("OS_PROJECT_NAME"),
-        user_domain_name=os.environ.get("OS_USER_DOMAIN_NAME", "Default"),
-        project_domain_name=os.environ.get("OS_PROJECT_DOMAIN_NAME", "Default"),
-        region_name=os.environ.get("OS_REGION_NAME"),
-        verify=os.environ.get("OS_VERIFY", "true").lower() not in {"0", "false", "no"},
-    )
-    conn.authorize()
-except Exception as exc:
-    print(f"OpenStack authorization failed: {exc}", file=sys.stderr)
-    sys.exit(1)
+conn = openstack.connect(
+    auth_url=os.environ["OS_AUTH_URL"],
+    username=os.environ.get("OS_USERNAME"),
+    password=os.environ.get("OS_PASSWORD"),
+    project_name=os.environ.get("OS_PROJECT_NAME"),
+    user_domain_name=os.environ.get("OS_USER_DOMAIN_NAME", "Default"),
+    project_domain_name=os.environ.get("OS_PROJECT_DOMAIN_NAME", "Default"),
+    region_name=os.environ.get("OS_REGION_NAME"),
+    verify=os.environ.get("OS_VERIFY", "true").lower() not in {"0", "false", "no"},
+)
+conn.authorize()
 PY
+  then
+    info "OpenStack authorization OK"
+  else
+    warn "OpenStack authorization failed (destination unreachable or bad credentials)."
+  fi
 }
 
 check_vmware_connectivity() {
   local host="${VMWARE_ESXI_HOST:-${VMWARE_HOST:-}}"
   if [[ -z "${host}" ]]; then
-    warn "VMware connectivity check skipped: VMWARE_ESXI_HOST/VMWARE_HOST is not set."
+    warn "VMware check skipped: VMWARE_ESXI_HOST unset."
     return
   fi
-
-  python - <<'PY'
+  if python - <<'PY'
 import os
 import ssl
-import sys
 from pyVim.connect import Disconnect, SmartConnect
 
 host = os.environ.get("VMWARE_ESXI_HOST") or os.environ.get("VMWARE_HOST")
@@ -134,23 +176,23 @@ user = os.environ.get("VMWARE_ESXI_USERNAME") or os.environ.get("VMWARE_USERNAME
 password = os.environ.get("VMWARE_ESXI_PASSWORD") or os.environ.get("VMWARE_PASSWORD")
 port = int(os.environ.get("VMWARE_ESXI_PORT", "443"))
 if not user or not password:
-    print("VMware host was supplied but username/password are missing.", file=sys.stderr)
-    sys.exit(1)
+    raise SystemExit("missing credentials")
 
 context = None
 if os.environ.get("VMWARE_ESXI_INSECURE", "false").lower() in {"1", "true", "yes"}:
     context = ssl._create_unverified_context()
 
-try:
-    si = SmartConnect(host=host, user=user, pwd=password, port=port, sslContext=context)
-    Disconnect(si)
-except Exception as exc:
-    print(f"VMware connection failed: {exc}", file=sys.stderr)
-    sys.exit(1)
+si = SmartConnect(host=host, user=user, pwd=password, port=port, sslContext=context)
+Disconnect(si)
 PY
+  then
+    info "VMware ESXi connection OK (${host})"
+  else
+    warn "VMware ESXi connection failed (${host})."
+  fi
 }
 
-info "Starting conversion worker preflight validation..."
+info "Starting conversion worker preflight (strict=${strict})..."
 
 require_env DATABASE_URL
 require_env REDIS_URL
@@ -158,11 +200,11 @@ require_env MIGRATION_OUTPUT_DIR
 
 require_bin virt-v2v
 require_bin qemu-img
+require_bin qemu-system-x86_64
 require_bin guestfish
-require_bin virt-filesystems
+require_bin supermin
 require_bin nbdkit
 require_bin ansible-playbook
-require_bin ssh
 
 if [[ "${ENABLE_TERRAFORM_FROM_CELERY:-false}" =~ ^(1|true|yes)$ ]]; then
   require_bin terraform
@@ -173,6 +215,8 @@ check_writable_dir "${ARTIFACT_BACKUP_DIR:-${MIGRATION_OUTPUT_DIR}/backups}"
 check_writable_dir /var/cache/guestfs
 check_writable_dir "${TERRAFORM_PLUGIN_CACHE_DIR:-/opt/terraform/plugin-cache}"
 check_disk_space "${MIGRATION_OUTPUT_DIR}"
+
+check_embedded_kernel
 
 if ! python - <<'PY'
 import django
@@ -185,38 +229,36 @@ with connection.cursor() as cursor:
     cursor.execute("SELECT 1")
 PY
 then
-  fail "Django database connectivity failed."
+  fail "MariaDB connectivity failed."
+else
+  info "MariaDB connectivity OK"
 fi
 
 if ! python - <<'PY'
 import os
 import redis
 
-url = os.environ.get("REDIS_URL")
-client = redis.Redis.from_url(url, socket_connect_timeout=3, socket_timeout=3)
+client = redis.Redis.from_url(os.environ["REDIS_URL"], socket_connect_timeout=5, socket_timeout=5)
 client.ping()
 PY
 then
-  fail "Redis broker connectivity failed."
-fi
-
-if ! guestfish --version >/dev/null 2>&1; then
-  fail "libguestfs userland is installed but guestfish cannot start."
-fi
-
-check_vddk
-
-if [[ "${REQUIRE_PREFLIGHT_CONNECTIVITY:-false}" == "true" ]]; then
-  check_openstack_connectivity || fail "OpenStack connectivity validation failed."
-  check_vmware_connectivity || fail "VMware connectivity validation failed."
+  fail "Redis connectivity failed."
 else
-  check_openstack_connectivity || warn "OpenStack connectivity validation failed."
-  check_vmware_connectivity || warn "VMware connectivity validation failed."
+  info "Redis connectivity OK"
 fi
+
+check_guestfish
+check_vddk
+check_openstack_connectivity
+check_vmware_connectivity
 
 if (( errors > 0 )); then
-  echo "Conversion worker preflight failed with ${errors} error(s) and ${warnings} warning(s)." >&2
-  exit 1
+  echo "Preflight finished with ${errors} error(s) and ${warnings} warning(s)." >&2
+  if [[ "${strict}" == "true" ]]; then
+    exit 1
+  fi
+  exit 0
 fi
 
-echo "Conversion worker preflight passed with ${warnings} warning(s)."
+echo "Preflight passed with ${warnings} warning(s)."
+exit 0

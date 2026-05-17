@@ -33,6 +33,14 @@ def build_libguestfs_runtime_env(base_env: dict[str, str] | None = None) -> dict
     threads = int(getattr(settings, "VIRT_V2V_NBDKIT_THREADS", 1))
     env["VIRT_V2V_NBDKIT_THREADS"] = str(threads)
 
+    supermin_kernel = str(getattr(settings, "SUPERMIN_KERNEL", "")).strip()
+    if supermin_kernel:
+        env["SUPERMIN_KERNEL"] = supermin_kernel
+
+    embed_root = str(getattr(settings, "EMBEDDED_KERNEL_ROOT", "")).strip()
+    if embed_root:
+        env["EMBEDDED_KERNEL_ROOT"] = embed_root
+
     tools_conf = str(getattr(settings, "LIBGUESTFS_TOOLS_CONF", "/etc/libguestfs-tools.conf"))
     if tools_conf:
         env.setdefault("LIBGUESTFS_TOOLS_CONF", tools_conf)

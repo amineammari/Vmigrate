@@ -131,6 +131,8 @@ def _truncate_log(text: str, limit: int | None = None) -> str:
 
 def _migration_snapshots_enabled() -> bool:
     """Return whether VMware pre-migration snapshots should be created."""
+    if not bool(getattr(settings, "ENABLE_ROLLBACK", True)):
+        return False
     return bool(getattr(settings, "ENABLE_ESXI_MIGRATION_SNAPSHOT", True))
 
 
@@ -227,17 +229,20 @@ def _ensure_libguestfs_kernel_readable() -> None:
     On some hardened installs, `/boot/vmlinuz-*` is mode 0600 (root-only) which
     causes supermin to fail and virt-v2v to exit early.
     """
-    configured_kernel = os.getenv("SUPERMIN_KERNEL", "").strip()
+    configured_kernel = (
+        os.getenv("SUPERMIN_KERNEL", "").strip()
+        or str(getattr(settings, "SUPERMIN_KERNEL", "")).strip()
+    )
     if configured_kernel:
         kernel = Path(configured_kernel).expanduser()
         if not kernel.exists():
             raise ConversionPlanningError(
                 "Configured SUPERMIN_KERNEL does not exist: "
-                f"{kernel}. Update SUPERMIN_KERNEL or remove it to use the active kernel."
+                f"{kernel}. Rebuild the conversion-worker image (embed-container-kernel)."
             )
     else:
-        release = os.uname().release
-        kernel = Path("/boot") / f"vmlinuz-{release}"
+        embed = Path(getattr(settings, "EMBEDDED_KERNEL_ROOT", "/usr/lib/vm-migrator/kernels")) / "vmlinuz"
+        kernel = embed if embed.exists() else Path("/boot") / f"vmlinuz-{os.uname().release}"
     if kernel.exists() and not os.access(kernel, os.R_OK):
         raise ConversionPlanningError(
             f"libguestfs cannot read host kernel image: {kernel}. "
