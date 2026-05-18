@@ -82,7 +82,7 @@ check_guestfish() {
     return
   fi
   info "guestfish responds to --version"
-  if timeout 120 guestfish -a /dev/null run : true >/tmp/guestfish-smoke.log 2>&1; then
+  if timeout 180 guestfish -N fs list-filesystems >/tmp/guestfish-smoke.log 2>&1; then
     info "guestfish appliance smoke test passed"
   else
     warn "guestfish appliance smoke test failed: $(tr '\n' ' ' </tmp/guestfish-smoke.log | cut -c1-400)"
@@ -137,26 +137,31 @@ check_openstack_connectivity() {
     warn "OpenStack check skipped: OS_AUTH_URL unset."
     return
   fi
-  if python - <<'PY'
+  if python - <<'PY' 2>/tmp/openstack-preflight.err
 import os
 import openstack
+import sys
 
-conn = openstack.connect(
-    auth_url=os.environ["OS_AUTH_URL"],
-    username=os.environ.get("OS_USERNAME"),
-    password=os.environ.get("OS_PASSWORD"),
-    project_name=os.environ.get("OS_PROJECT_NAME"),
-    user_domain_name=os.environ.get("OS_USER_DOMAIN_NAME", "Default"),
-    project_domain_name=os.environ.get("OS_PROJECT_DOMAIN_NAME", "Default"),
-    region_name=os.environ.get("OS_REGION_NAME"),
-    verify=os.environ.get("OS_VERIFY", "true").lower() not in {"0", "false", "no"},
-)
-conn.authorize()
+try:
+    conn = openstack.connect(
+        auth_url=os.environ["OS_AUTH_URL"],
+        username=os.environ.get("OS_USERNAME"),
+        password=os.environ.get("OS_PASSWORD"),
+        project_name=os.environ.get("OS_PROJECT_NAME"),
+        user_domain_name=os.environ.get("OS_USER_DOMAIN_NAME", "Default"),
+        project_domain_name=os.environ.get("OS_PROJECT_DOMAIN_NAME", "Default"),
+        region_name=os.environ.get("OS_REGION_NAME"),
+        verify=os.environ.get("OS_VERIFY", "true").lower() not in {"0", "false", "no"},
+    )
+    conn.authorize()
+except Exception as exc:
+    print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+    raise SystemExit(1)
 PY
   then
     info "OpenStack authorization OK"
   else
-    warn "OpenStack authorization failed (destination unreachable or bad credentials)."
+    warn "OpenStack authorization failed (destination unreachable or bad credentials): $(tail -n 1 /tmp/openstack-preflight.err | cut -c1-220)"
   fi
 }
 
@@ -166,9 +171,10 @@ check_vmware_connectivity() {
     warn "VMware check skipped: VMWARE_ESXI_HOST unset."
     return
   fi
-  if python - <<'PY'
+  if python - <<'PY' 2>/tmp/vmware-preflight.err
 import os
 import ssl
+import sys
 from pyVim.connect import Disconnect, SmartConnect
 
 host = os.environ.get("VMWARE_ESXI_HOST") or os.environ.get("VMWARE_HOST")
@@ -176,19 +182,24 @@ user = os.environ.get("VMWARE_ESXI_USERNAME") or os.environ.get("VMWARE_USERNAME
 password = os.environ.get("VMWARE_ESXI_PASSWORD") or os.environ.get("VMWARE_PASSWORD")
 port = int(os.environ.get("VMWARE_ESXI_PORT", "443"))
 if not user or not password:
-    raise SystemExit("missing credentials")
+    print("missing credentials", file=sys.stderr)
+    raise SystemExit(1)
 
 context = None
 if os.environ.get("VMWARE_ESXI_INSECURE", "false").lower() in {"1", "true", "yes"}:
     context = ssl._create_unverified_context()
 
-si = SmartConnect(host=host, user=user, pwd=password, port=port, sslContext=context)
-Disconnect(si)
+try:
+    si = SmartConnect(host=host, user=user, pwd=password, port=port, sslContext=context)
+    Disconnect(si)
+except Exception as exc:
+    print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+    raise SystemExit(1)
 PY
   then
     info "VMware ESXi connection OK (${host})"
   else
-    warn "VMware ESXi connection failed (${host})."
+    warn "VMware ESXi connection failed (${host}): $(tail -n 1 /tmp/vmware-preflight.err | cut -c1-220)"
   fi
 }
 

@@ -167,21 +167,23 @@ services:
         condition: service_healthy
     restart: unless-stopped
     user: root
-    # Enable full privileged access required for nested virtualization,
-    # direct device passthrough (KVM), and low-level operations performed
-    # by `qemu` / `libguestfs` (also helps VDDK when interacting with host)
+    # Enable full privileged access required by libguestfs/qemu appliance
+    # setup. The runtime is intentionally TCG-only; no host /dev/kvm mapping
+    # is required or assumed for the offline worker.
     privileged: true
 
-    # Make the host KVM device available inside the container so qemu can
-    # use hardware virtualization extensions for nested virtualization.
-    devices:
-      - /dev/kvm:/dev/kvm
-
     # Add capabilities needed by libguestfs and qemu to manage mounts,
-    # perform certain ioctl/syscalls and configure networking for appliances.
+    # perform certain ioctl/syscalls and configure appliance networking.
     cap_add:
       - SYS_ADMIN
       - NET_ADMIN
+      - SYS_PTRACE
+      - DAC_READ_SEARCH
+      - MKNOD
+    shm_size: "1gb"
+    tmpfs:
+      - /tmp:rw,exec,nosuid,size=4g
+      - /run:rw,nosuid,size=128m
 
     # Relax security profiles so qemu/libguestfs can make the syscalls
     # they require (unconfined AppArmor and unconfined seccomp profile).
@@ -233,7 +235,8 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
-    command: /usr/local/bin/celery-beat-entrypoint celery -A core beat -l INFO --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    entrypoint: ["/usr/local/bin/celery-beat-entrypoint"]
+    command: []
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import os,sys; sys.exit(0 if os.path.exists('/var/lib/vm-migrator/beat/celerybeat-schedule') else 1)\""]
       interval: 30s

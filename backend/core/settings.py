@@ -264,6 +264,7 @@ LIBGUESTFS_BACKEND_SETTINGS = env("LIBGUESTFS_BACKEND_SETTINGS", default="force_
 LIBGUESTFS_MEMSIZE = env.int("LIBGUESTFS_MEMSIZE", default=768)
 LIBGUESTFS_CPUS = env.int("LIBGUESTFS_CPUS", default=1)
 LIBGUESTFS_TOOLS_CONF = env("LIBGUESTFS_TOOLS_CONF", default="/etc/libguestfs-tools.conf")
+LIBGUESTFS_HV = env("LIBGUESTFS_HV", default="/usr/local/bin/qemu-system-x86_64-tcg")
 EMBEDDED_KERNEL_ROOT = env("EMBEDDED_KERNEL_ROOT", default="/usr/lib/vm-migrator/kernels")
 SUPERMIN_KERNEL = env("SUPERMIN_KERNEL", default=f"{EMBEDDED_KERNEL_ROOT}/vmlinuz")
 VIRT_V2V_NBDKIT_THREADS = env.int("VIRT_V2V_NBDKIT_THREADS", default=1)

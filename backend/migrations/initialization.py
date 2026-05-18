@@ -14,12 +14,20 @@ Security considerations:
 
 import logging
 import os
+from django.db import IntegrityError, connection
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.contrib.auth.password_validation import validate_password
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
+
+
+def _user_table_ready() -> bool:
+    try:
+        return User._meta.db_table in connection.introspection.table_names()
+    except Exception:
+        return False
 
 
 def bootstrap_default_superadmin():
@@ -54,6 +62,16 @@ def bootstrap_default_superadmin():
     default_password = os.environ.get("DEFAULT_SUPERADMIN_PASSWORD", "ChangeMe123!")
     
     try:
+        if not _user_table_ready():
+            logger.info(
+                "Default superadmin bootstrap skipped; user table is not ready.",
+                extra={
+                    "event": "init.superadmin.skipped",
+                    "reason": "user_table_not_ready",
+                },
+            )
+            return None, False
+
         # Check if any superadmin already exists (idempotency check)
         existing_superadmin = User.objects.filter(role=User.Role.SUPER_ADMIN).exists()
         
@@ -81,13 +99,31 @@ def bootstrap_default_superadmin():
             )
             raise
         
-        # Create the default superadmin user
-        superadmin_user = User.objects.create_user(
-            username=default_username,
-            email=default_email,
-            password=default_password,
-            role=User.Role.SUPER_ADMIN,
-        )
+        # Create the default superadmin user. Another worker may be starting at
+        # the same time, so tolerate a duplicate username and treat it as
+        # idempotent startup.
+        try:
+            superadmin_user = User.objects.create_user(
+                username=default_username,
+                email=default_email,
+                password=default_password,
+                role=User.Role.SUPER_ADMIN,
+            )
+        except IntegrityError:
+            superadmin_user = User.objects.filter(username=default_username).first()
+            if superadmin_user is not None:
+                if getattr(superadmin_user, "role", None) != User.Role.SUPER_ADMIN:
+                    superadmin_user.role = User.Role.SUPER_ADMIN
+                    superadmin_user.save(update_fields=["role"])
+                logger.info(
+                    "Default superadmin user already exists. Skipping creation.",
+                    extra={
+                        "event": "init.superadmin.skipped",
+                        "reason": "superadmin_username_already_exists",
+                    },
+                )
+                return superadmin_user, False
+            raise
         
         logger.info(
             f"Default superadmin user created: {default_username}",

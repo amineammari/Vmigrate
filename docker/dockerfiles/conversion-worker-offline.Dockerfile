@@ -15,6 +15,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     LIBGUESTFS_SMP=1 \
     VIRT_V2V_NBDKIT_THREADS=1 \
     LIBGUESTFS_TOOLS_CONF=/etc/libguestfs-tools.conf \
+    LIBGUESTFS_HV=/usr/local/bin/qemu-system-x86_64-tcg \
     EMBEDDED_KERNEL_ROOT=/usr/lib/vm-migrator/kernels \
     SUPERMIN_KERNEL=/usr/lib/vm-migrator/kernels/vmlinuz \
     TERRAFORM_PLUGIN_CACHE_DIR=/opt/terraform/plugin-cache \
@@ -41,6 +42,7 @@ RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmwa
         libguestfs-reiserfs \
         libguestfs-xfs \
         libosinfo-bin \
+        libnbd-bin \
         libvirt-clients \
         libxml2 \
         linux-image-amd64 \
@@ -89,6 +91,7 @@ COPY docker/scripts/vddk-sanitize-libcxx.sh /usr/local/bin/vddk-sanitize-libcxx
 COPY docker/scripts/embed-container-kernel.sh /usr/local/bin/embed-container-kernel
 COPY docker/scripts/write-libguestfs-tools-conf.sh /usr/local/bin/write-libguestfs-tools-conf
 COPY docker/scripts/setup-embedded-kernel-runtime.sh /usr/local/bin/setup-embedded-kernel-runtime
+COPY docker/scripts/qemu-system-x86_64-tcg-wrapper.sh /usr/local/bin/qemu-system-x86_64-tcg
 COPY docker/entrypoints/conversion-worker.sh /usr/local/bin/conversion-worker-entrypoint
 COPY docker/healthchecks/conversion-worker-healthcheck.sh /usr/local/bin/conversion-worker-healthcheck
 COPY docker/worker/preflight.sh /usr/local/bin/conversion-worker-preflight
@@ -97,6 +100,7 @@ RUN chmod +x /usr/local/bin/vddk-sanitize-libcxx \
         /usr/local/bin/embed-container-kernel \
         /usr/local/bin/write-libguestfs-tools-conf \
         /usr/local/bin/setup-embedded-kernel-runtime \
+        /usr/local/bin/qemu-system-x86_64-tcg \
         /usr/local/bin/conversion-worker-entrypoint \
         /usr/local/bin/conversion-worker-healthcheck \
         /usr/local/bin/conversion-worker-preflight \

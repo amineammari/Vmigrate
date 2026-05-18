@@ -45,6 +45,10 @@ def build_libguestfs_runtime_env(base_env: dict[str, str] | None = None) -> dict
     if tools_conf:
         env.setdefault("LIBGUESTFS_TOOLS_CONF", tools_conf)
 
+    hv = str(getattr(settings, "LIBGUESTFS_HV", "")).strip()
+    if hv:
+        env["LIBGUESTFS_HV"] = hv
+
     return env
 
 

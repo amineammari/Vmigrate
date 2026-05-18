@@ -29,6 +29,7 @@ RUN sed -i 's/Components: main/Components: main contrib non-free non-free-firmwa
         libguestfs-tools \
         libguestfs-xfs \
         libguestfs-reiserfs \
+        libnbd-bin \
         libvirt-clients \
         libxml2 \
         nbdkit \

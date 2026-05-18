@@ -129,6 +129,54 @@ def _truncate_log(text: str, limit: int | None = None) -> str:
     return text[:limit] + "\n...[truncated]"
 
 
+def _write_conversion_error_log(job_id: int, vm_name: str, error: str, stderr: str, stdout: str) -> str:
+    """
+    Write detailed conversion error diagnostics to a persistent log file.
+    
+    This file survives rollback and database cleanup, making it available
+    for diagnostics in air-gapped environments where DB access may be limited.
+    
+    Returns the log file path.
+    """
+    try:
+        output_dir = Path(getattr(settings, "MIGRATION_OUTPUT_DIR", "/var/lib/vm-migrator/images"))
+        logs_dir = output_dir / "error_logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Use timestamp + job_id to ensure unique filenames
+        timestamp = timezone.now().isoformat()
+        log_filename = f"job-{job_id}_{vm_name}_{timezone.now().strftime('%Y%m%d-%H%M%S')}.error.log"
+        log_path = logs_dir / log_filename
+        
+        error_content = f"""CONVERSION ERROR LOG
+====================
+Job ID: {job_id}
+VM Name: {vm_name}
+Timestamp: {timestamp}
+Error: {error}
+
+STDERR Output:
+--------------
+{stderr if stderr else "(empty)"}
+
+STDOUT Output:
+--------------
+{stdout if stdout else "(empty)"}
+
+This file is stored in the error_logs directory and persists across rollbacks.
+For air-gapped environments, use 'docker cp' to extract this file for diagnostics.
+"""
+        
+        log_path.write_text(error_content, encoding="utf-8")
+        return str(log_path)
+    except Exception as exc:
+        logger.warning(
+            "migration.error_log write_failed",
+            extra={"error": str(exc), "job_id": job_id, "vm_name": vm_name},
+        )
+        return ""
+
+
 def _migration_snapshots_enabled() -> bool:
     """Return whether VMware pre-migration snapshots should be created."""
     if not bool(getattr(settings, "ENABLE_ROLLBACK", True)):
@@ -332,11 +380,14 @@ def _check_vddk_runtime() -> dict[str, Any]:
                 env=_vddk_runtime_env(),
             )
             report["nbdkit_vddk_plugin"] = completed.returncode == 0
-            # Note: nbdkit VDDK plugin is optional when using virt-v2v -it vddk transport
-            # which talks directly to VDDK libs. Not a fatal error if plugin can't load.
-        except (OSError, subprocess.SubprocessError):
-            # nbdkit inspection failed, but this is non-fatal for -it vddk transport
-            pass
+            if not report["nbdkit_vddk_plugin"]:
+                detail = (completed.stderr or completed.stdout or "").strip()
+                message = "nbdkit VDDK plugin is unavailable."
+                if detail:
+                    message = f"{message} {detail}"
+                errors.append(message)
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors.append(f"Unable to inspect nbdkit VDDK plugin: {exc}")
 
     vddk_libdir = str(report["vddk_libdir"] or "")
     if not vddk_libdir:
@@ -2981,12 +3032,28 @@ def start_migration(job_id: int) -> dict[str, Any]:
         job.conversion_metadata = metadata
         job.save(update_fields=["conversion_metadata", "updated_at"])
 
+        # Write detailed error log to persistent file for air-gapped diagnostics
+        error_log_path = _write_conversion_error_log(
+            job.id, job.vm_name, str(exc), exc.stderr, exc.stdout
+        )
+
         _mark_job_failed(job, str(exc))
         _schedule_rollback(job, str(exc), extra_context={"output_qcow2_path": conv.get("output_qcow2_path")})
 
+        # Log full conversion error with stderr/stdout for air-gapped diagnostics
+        log_extra: dict[str, Any] = {
+            "job_id": job.id,
+            "vm_name": job.vm_name,
+            "error": str(exc),
+            "returncode": exc.returncode,
+            "stderr": _truncate_log(exc.stderr, limit=5000),  # First 5KB of stderr for diagnostics
+            "stdout": _truncate_log(exc.stdout, limit=5000),  # First 5KB of stdout for diagnostics
+        }
+        if error_log_path:
+            log_extra["error_log_file"] = error_log_path
         logger.error(
             "migration.start conversion_failed",
-            extra={"job_id": job.id, "vm_name": job.vm_name, "error": str(exc)},
+            extra=log_extra,
         )
         return {
             "job_id": job.id,
