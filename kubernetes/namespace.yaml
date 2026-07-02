@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vmigrate
+  labels:
+    app.kubernetes.io/name: vmigrate
+    app.kubernetes.io/part-of: vmigrate
+
